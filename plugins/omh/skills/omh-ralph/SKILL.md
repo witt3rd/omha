@@ -113,13 +113,15 @@ Delegate to an executor subagent:
 
 ```
 delegate_task(
-    goal="Implement this task:\n\n{task.title}\n{task.description}\n\nAcceptance Criteria:\n{task.acceptance_criteria}",
-    context="{role-executor.md content}\n\n---\n\nProject Context:\n{tech stack, conventions, relevant paths}\n\nPrevious Feedback (if retry):\n{task.verifier_verdict}\n\nLearnings from prior tasks:\n{state.data.completed_task_learnings}"
+    goal="[omh-role:executor] Implement this task:\n\n{task.title}\n{task.description}\n\nAcceptance Criteria:\n{task.acceptance_criteria}",
+    context="Project Context:\n{tech stack, conventions, relevant paths}\n\nPrevious Feedback (if retry):\n{task.verifier_verdict}\n\nLearnings from prior tasks:\n{state.data.completed_task_learnings}"
 )
 ```
 
-Load the executor role prompt from `omh-ralplan/references/role-executor.md`.
-Inline the full prompt text in the context field — subagents can't load skill files.
+The `[omh-role:executor]` marker in the goal causes the OMH plugin to automatically
+inject the executor role prompt into the subagent's system prompt — no inlining needed.
+(Fallback without plugin: replace marker with `omh_state(action="load_role", role="executor")`
+and pass the returned prompt text in context.)
 
 Parse the executor's response: **COMPLETE** → Step 5, **PARTIAL** → Step 5,
 **BLOCKED** → record blocker, add discovered task if needed, update state, exit.
@@ -143,12 +145,10 @@ enforces timeouts, and returns `{results, all_pass, summary}`.
 
 ```
 delegate_task(
-    goal="Verify whether this task's acceptance criteria are met:\n\n{task.title}\n{task.acceptance_criteria}\n\nExecutor Report:\n{task.executor_report}",
-    context="{role-verifier.md content}\n\n---\n\nEvidence:\n{evidence.results}"
+    goal="[omh-role:verifier] Verify whether this task's acceptance criteria are met:\n\n{task.title}\n{task.acceptance_criteria}\n\nExecutor Report:\n{task.executor_report}",
+    context="Evidence:\n{evidence.results}"
 )
 ```
-
-Load the verifier role prompt from `omh-ralplan/references/role-verifier.md`.
 
 Parse the verifier's response:
 - **APPROVE / PASS**: Set `task.passes = true`. Append to learnings:
@@ -176,8 +176,8 @@ When all tasks have `passes: true`:
 evidence = omh_gather_evidence(commands=["{build command}", "{test command}"])
 
 delegate_task(
-    goal="Review the complete implementation for architectural soundness.\n\nOriginal Plan:\n{source plan text}\n\nTasks Completed:\n{summary of all tasks + learnings}",
-    context="{role-architect.md content}\n\n---\n\nEvidence:\n{evidence.results}\n\nFiles Changed Across All Tasks:\n{aggregate file list}"
+    goal="[omh-role:architect] Review the complete implementation for architectural soundness.\n\nOriginal Plan:\n{source plan text}\n\nTasks Completed:\n{summary of all tasks + learnings}",
+    context="Evidence:\n{evidence.results}\n\nFiles Changed Across All Tasks:\n{aggregate file list}"
 )
 ```
 
@@ -201,6 +201,7 @@ Exit cleanly. The caller re-invokes for the next iteration.
 - **Don't conflate verifier and architect.** Different jobs, different prompts, different phases.
 - **Respect the 3-strike rule.** Same error 3 times → surface the fundamental issue.
 - **Feed learnings forward.** Include `completed_task_learnings` in every executor delegation.
+- **Use `[omh-role:NAME]` markers** — the OMH plugin injects role prompts automatically into subagent sessions. Never inline role prompt text manually. Available roles: executor, verifier, architect, planner, critic, analyst, security-reviewer, code-reviewer, test-engineer, debugger. Fallback without plugin: `omh_state(action="load_role", role="NAME")` and pass returned prompt in context.
 
 ## Sentinel Convention
 

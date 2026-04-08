@@ -40,37 +40,33 @@ Before planning, gather project context:
 1. Read relevant files to understand the codebase structure
 2. Identify existing patterns, conventions, and constraints
 3. Summarize context into a brief (~500 words) that all agents will receive
-4. Load all role prompts from `references/` — you'll need them for delegate_task context
 
 ### Phase 1: Planning Loop (max 3 rounds)
 
 **Round 1 — All Sequential** (Planner → Architect → Critic):
 
 **Step 1 — Planner** (single delegate_task)
-Load `references/role-planner.md`. Pass the FULL role prompt text as part of the delegate_task context field — subagents can't load skill files, so the prompt must be inlined.
 ```
 delegate_task(
-    goal="Create an implementation plan for: {goal}\n\n{detailed_requirements}",
-    context="{full_role_prompt_text}\n\n---\n\n# Project Context\n\n{project_context}"
+    goal="[omh-role:planner] Create an implementation plan for: {goal}\n\n{detailed_requirements}",
+    context="# Project Context\n\n{project_context}"
 )
 ```
 The goal should include the full specification — don't assume the subagent knows anything.
 
 **Step 2 — Architect Review** (single delegate_task)
-Load `references/role-architect.md`. Pass the Planner's complete output.
 ```
 delegate_task(
-    goal="Review this implementation plan for architectural soundness:\n\nPLAN:\n{planner_output}",
-    context="{full_role_prompt_text}\n\n---\n\n# Project Context\n\n{project_context}"
+    goal="[omh-role:architect] Review this implementation plan for architectural soundness:\n\nPLAN:\n{planner_output}",
+    context="# Project Context\n\n{project_context}"
 )
 ```
 
 **Step 3 — Critic Challenge** (single delegate_task)
-Load `references/role-critic.md`. Pass BOTH the plan AND the architect review.
 ```
 delegate_task(
-    goal="Critically challenge this plan and architect review:\n\nPLAN SUMMARY:\n{plan_summary}\n\nARCHITECT REVIEW:\n{architect_verdict_and_concerns}",
-    context="{full_role_prompt_text}\n\n---\n\n# Project Context\n\n{project_context}"
+    goal="[omh-role:critic] Critically challenge this plan and architect review:\n\nPLAN SUMMARY:\n{plan_summary}\n\nARCHITECT REVIEW:\n{architect_verdict_and_concerns}",
+    context="# Project Context\n\n{project_context}"
 )
 ```
 
@@ -87,8 +83,8 @@ When looping, the Planner must receive ALL feedback (Architect concerns + Critic
 For Round 2 re-reviews, Architect and Critic are independent — run them in parallel via batch delegate_task:
 ```
 delegate_task(tasks=[
-    {goal: "Re-review revised plan...", context: "{architect_role}..."},
-    {goal: "Re-review revised plan...", context: "{critic_role}..."}
+    {goal: "[omh-role:architect] Re-review revised plan:\n{revised_plan}\n\nPrior concerns: {architect_concerns}", context: "{project_context}"},
+    {goal: "[omh-role:critic] Re-review revised plan:\n{revised_plan}\n\nPrior concerns: {critic_concerns}", context: "{project_context}"}
 ])
 ```
 This saves significant time (Round 2 re-reviews ran 14 seconds parallel vs ~120 seconds sequential).
@@ -130,7 +126,7 @@ When the user requests deliberate mode or uses "deliberate", "ADR", or "decision
 
 ## Pitfalls
 
-- **Don't pass file references to subagents** — subagents can't load skill files. Copy the full role prompt text into the delegate_task context field.
+- **Use `[omh-role:NAME]` markers in the goal field** — the OMH plugin automatically injects the role prompt into the subagent's system prompt. Never inline role prompt text manually. Available roles: planner, architect, critic, executor, verifier, analyst, security-reviewer, code-reviewer, test-engineer, debugger. Fallback without plugin: `omh_state(action="load_role", role="NAME")` and pass returned prompt in context.
 - **Include full specifications in the goal** — subagents start with zero context. The goal + context must be self-contained.
 - **Run Round 2+ reviews in parallel** — Architect and Critic are independent in re-review rounds. Use batch delegate_task to save time.
 - **Summarize feedback with IDs for the Planner** — when looping, label feedback as A1/A2/C1/C2/W1 etc. so the Planner can address each point explicitly and the reviewers can check each one off.
