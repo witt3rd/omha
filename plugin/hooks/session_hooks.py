@@ -8,7 +8,7 @@ their state files so the next session knows it was interrupted mid-workflow.
 import logging
 from datetime import datetime, timezone
 
-from plugin.omh_state import _invalidate_list_cache, state_list_active, state_read, state_write
+from ..omh_state import _invalidate_list_cache, state_list_active, state_read, state_write
 
 logger = logging.getLogger(__name__)
 

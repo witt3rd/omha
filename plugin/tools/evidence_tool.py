@@ -12,7 +12,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from plugin.omh_config import get_config
+from ..omh_config import get_config
 
 logger = logging.getLogger(__name__)
 

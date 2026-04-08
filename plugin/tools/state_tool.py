@@ -6,7 +6,7 @@ Actions: read | write | clear | check | list | cancel | cancel_check
 
 import json
 
-from plugin.omh_state import (
+from ..omh_state import (
     state_cancel,
     state_check,
     state_check_cancel,

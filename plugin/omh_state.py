@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from plugin.omh_config import get_config
+from .omh_config import get_config
 
 logger = logging.getLogger(__name__)
 

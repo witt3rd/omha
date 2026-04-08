@@ -8,7 +8,7 @@ Returns None when no OMH modes are active (zero overhead).
 
 import logging
 
-from plugin.omh_state import state_list_active
+from ..omh_state import state_list_active
 
 logger = logging.getLogger(__name__)
 
