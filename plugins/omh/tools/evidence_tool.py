@@ -121,8 +121,7 @@ def omh_evidence_handler(args: dict, **kwargs) -> str:
             "hint": "Use simple commands without ; && || | ` $( ) { } characters",
         })
 
-    # Allowlist check — token-based to prevent partial-word and argument-injection bypass.
-    rejected = []
+    # Parse all commands first
     parsed_commands: list[tuple[str, list[str]]] = []
     for cmd in commands:
         try:
@@ -132,21 +131,24 @@ def omh_evidence_handler(args: dict, **kwargs) -> str:
                 "error": f"Command could not be parsed: {e}",
                 "rejected": [cmd],
             })
-        if not _matches_allowlist(tokens, allowlist):
-            rejected.append(cmd)
-        else:
-            parsed_commands.append((cmd, tokens))
+        parsed_commands.append((cmd, tokens))
 
-    if rejected:
-        logger.debug("Rejected commands not in allowlist: %s", rejected)
-        return json.dumps({
-            "error": "Commands not in allowlist",
-            "rejected": rejected,
-            "hint": "Add prefixes to config.yaml evidence.allowlist_prefixes",
-        })
-
+    # Execute each command, with per-command allowlist rejection
     results = []
     for cmd, tokens in parsed_commands:
+        # Per-command allowlist check
+        if not _matches_allowlist(tokens, allowlist):
+            logger.debug("Rejected command not in allowlist: %s", cmd)
+            results.append({
+                "command": cmd,
+                "exit_code": -1,
+                "output": "Command not in allowlist",
+                "truncated": False,
+                "passed": False,
+                "error": "Command not in allowlist",
+            })
+            continue
+
         try:
             proc = subprocess.run(
                 tokens,
@@ -165,6 +167,14 @@ def omh_evidence_handler(args: dict, **kwargs) -> str:
                 "output": output,
                 "truncated": truncated,
                 "passed": proc.returncode == 0,
+            })
+        except FileNotFoundError:
+            results.append({
+                "command": cmd,
+                "exit_code": -1,
+                "output": f"Command not found: {tokens[0]}",
+                "truncated": False,
+                "passed": False,
             })
         except subprocess.TimeoutExpired:
             results.append({

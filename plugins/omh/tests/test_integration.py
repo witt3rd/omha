@@ -315,7 +315,7 @@ def test_register_tool_signature_matches_hermes_contract(plugin_dir):
             assert isinstance(toolset, str), f"toolset should be str, got {type(toolset)}"
             assert isinstance(schema, dict), f"schema should be dict, got {type(schema)}"
             assert callable(handler), f"handler should be callable, got {type(handler)}"
-            calls["tools"].append({"name": name, "toolset": toolset, "schema": schema, "handler": handler})
+            calls["tools"].append({"name": name, "toolset": toolset, "schema": schema, "handler": handler, "kwargs": kwargs})
 
         def register_hook(self, hook_name, callback):
             assert isinstance(hook_name, str)
@@ -335,6 +335,11 @@ def test_register_tool_signature_matches_hermes_contract(plugin_dir):
         assert t["toolset"] == "omh", f"Tool {t['name']} has wrong toolset: {t['toolset']}"
         assert "name" in t["schema"], f"Tool {t['name']} schema missing 'name' field"
         assert "parameters" in t["schema"], f"Tool {t['name']} schema missing 'parameters' field"
+
+    for t in calls["tools"]:
+        assert "description" in t["kwargs"], f"Tool {t['name']} missing description kwarg"
+        assert isinstance(t["kwargs"]["description"], str)
+        assert len(t["kwargs"]["description"]) > 0
 
     # Verify hooks
     hook_names = [h["hook_name"] for h in calls["hooks"]]

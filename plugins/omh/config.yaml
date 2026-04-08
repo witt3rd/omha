@@ -47,6 +47,7 @@ evidence:
     - "cargo build"
     - "cargo check"
     - "cargo clippy"
+    - "rustfmt --check"  # Rust formatter check
     # Go
     - "go test"
     - "go build"
@@ -56,12 +57,15 @@ evidence:
     - "python -m mypy"
     - "python3 -m pytest"
     - "python3 -m mypy"
+    - "uv run pytest"  # uv package manager - pytest
+    - "uv run mypy"    # uv package manager - mypy
     # Linters / formatters
     - "ruff check"
     - "ruff format --check"
     - "black --check"
     - "eslint"
     - "tsc"
+    - "prettier --check"  # Prettier formatter check
     # Make — specific safe targets only
     - "make test"
     - "make build"

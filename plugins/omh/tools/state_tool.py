@@ -52,6 +52,10 @@ OMH_STATE_SCHEMA = {
                 "type": "string",
                 "description": "Cancel reason (for action=cancel only)",
             },
+            "requested_by": {
+                "type": "string",
+                "description": "Who requested the cancel (for action=cancel only, default: user)",
+            },
         },
         "required": ["action"],
     },
@@ -73,7 +77,7 @@ def omh_state_handler(args: dict, **kwargs) -> str:
         "write":        lambda: state_write(mode, args.get("data") or {}),
         "clear":        lambda: state_clear(mode),
         "check":        lambda: state_check(mode),
-        "cancel":       lambda: state_cancel(mode, args.get("reason", "user request")),
+        "cancel":       lambda: state_cancel(mode, args.get("reason", "user request"), args.get("requested_by", "user")),
         "cancel_check": lambda: state_check_cancel(mode),
     }
 

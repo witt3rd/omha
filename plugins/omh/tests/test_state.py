@@ -64,16 +64,30 @@ def test_read_missing_file():
     assert result["data"] == {}
 
 
+def test_write_rejects_non_dict():
+    # Test with string
+    result = state_write("ralph", "not a dict")
+    assert result["success"] is False
+    assert "data must be a dict" in result["error"]
+
+    # Test with list
+    result = state_write("ralph", ["also", "not", "a", "dict"])
+    assert result["success"] is False
+    assert "data must be a dict" in result["error"]
+
+
 def test_clear_removes_file():
     state_write("ralph", {"active": True})
     result = state_clear("ralph")
     assert result["cleared"] is True
+    assert result["existed"] is True
     assert not Path(".omh/state/ralph-state.json").exists()
 
 
 def test_clear_missing_file():
     result = state_clear("nonexistent")
-    assert result["cleared"] is False
+    assert result["cleared"] is True
+    assert result["existed"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +101,7 @@ def test_meta_envelope_present():
     assert raw["_meta"]["mode"] == "ralph"
     assert raw["_meta"]["schema_version"] == 1
     assert "written_at" in raw["_meta"]
+    assert raw["_meta"]["written_by"] == "omh-plugin"
 
 
 # ---------------------------------------------------------------------------
@@ -136,12 +151,13 @@ def test_staleness_detected(monkeypatch):
 
 def test_cancel_sets_field():
     state_write("ralph", {"active": True})
-    result = state_cancel("ralph", reason="test cancel")
+    result = state_cancel("ralph", reason="test cancel", requested_by="test-agent")
     assert result["success"] is True
 
     read = state_read("ralph")
     assert read["data"]["cancel_requested"] is True
     assert read["data"]["cancel_reason"] == "test cancel"
+    assert read["data"]["cancel_requested_by"] == "test-agent"
 
 
 def test_cancel_check_detects_signal():

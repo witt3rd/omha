@@ -172,8 +172,9 @@ def _():
     from tools.registry import registry
     h = registry._tools["omh_gather_evidence"].handler
     r = json.loads(h({"commands": ["rm -rf /"]}))
-    assert "error" in r
-    assert "rm -rf /" in r["rejected"]
+    assert r["all_pass"] is False
+    assert r["results"][0]["passed"] is False
+    assert "not in allowlist" in r["results"][0]["error"]
 
 
 @test("pre_llm_call hook: returns context when modes active")

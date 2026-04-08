@@ -54,7 +54,7 @@ def _now_iso() -> str:
 def _wrap_meta(mode: str, data: dict) -> dict:
     # Strip only the reserved "_meta" key — other underscore-prefixed fields (e.g. _interrupted_at) are valid user data.
     clean_data = {k: v for k, v in data.items() if k != "_meta"}
-    wrapped = {"_meta": {"written_at": _now_iso(), "mode": mode, "schema_version": _SCHEMA_VERSION}}
+    wrapped = {"_meta": {"written_at": _now_iso(), "mode": mode, "schema_version": _SCHEMA_VERSION, "written_by": "omh-plugin"}}
     wrapped.update(clean_data)
     return wrapped
 
@@ -128,6 +128,8 @@ _STATE_WARN_SIZE = 100_000  # 100KB — warn but still write; large state may in
 
 def state_write(mode: str, data: dict) -> dict:
     """Atomic write with _meta envelope. Returns {success, path}."""
+    if not isinstance(data, dict):
+        return {"success": False, "error": "data must be a dict"}
     path = _state_path(mode)
     wrapped = _wrap_meta(mode, data)
     try:
@@ -149,17 +151,17 @@ def state_clear(mode: str) -> dict:
     """Delete state file. Returns {cleared, path}."""
     path = _state_path(mode)
     if not path.exists():
-        return {"cleared": False, "path": str(path), "reason": "not found"}
+        return {"cleared": True, "existed": False, "path": str(path)}
     try:
         path.unlink()
         _invalidate_list_cache()
-        return {"cleared": True, "path": str(path)}
+        return {"cleared": True, "existed": True, "path": str(path)}
     except Exception as e:
         return {"cleared": False, "path": str(path), "error": str(e)}
 
 
 def state_check(mode: str) -> dict:
-    """Quick status: {exists, active, stale, phase, age_seconds}."""
+    """Quick status: {exists, active, stale, phase, age_seconds, iteration}."""
     result = state_read(mode)
     data = result.get("data", {})
     check = {
@@ -168,6 +170,7 @@ def state_check(mode: str) -> dict:
         "stale": result.get("stale", False),
         "phase": data.get("phase"),
         "age_seconds": result.get("age_seconds", 0),
+        "iteration": data.get("iteration"),
     }
     if "error" in result:
         check["error"] = result["error"]
@@ -197,7 +200,7 @@ def state_list_active() -> dict:
     return result
 
 
-def state_cancel(mode: str, reason: str = "user request") -> dict:
+def state_cancel(mode: str, reason: str = "user request", requested_by: str = "user") -> dict:
     """Set cancel_requested=True in the mode's state file."""
     result = state_read(mode)
     if result["exists"]:
@@ -209,6 +212,7 @@ def state_cancel(mode: str, reason: str = "user request") -> dict:
     data["cancel_requested"] = True
     data["cancel_reason"] = reason
     data["cancel_at"] = _now_iso()
+    data["cancel_requested_by"] = requested_by
     return state_write(mode, data)
 
 

