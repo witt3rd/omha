@@ -111,7 +111,7 @@ def omh_evidence_handler(args: dict, **kwargs) -> str:
         return json.dumps({"error": f"Too many commands: {len(commands)} > {max_cmds}"})
 
     # Reject commands containing shell metacharacters (injection prevention).
-    # The allowlist uses startswith() which is bypassable via ; && || | etc.
+    # Primary defense is shell=False (no shell expansion); this adds belt-and-suspenders.
     chained = [cmd for cmd in commands if _SHELL_METACHAR_RE.search(cmd)]
     if chained:
         logger.debug("Rejected commands containing shell metacharacters: %s", chained)
@@ -152,7 +152,7 @@ def omh_evidence_handler(args: dict, **kwargs) -> str:
         try:
             proc = subprocess.run(
                 tokens,
-                shell=False,
+                shell=False,  # primary metacharacter defense — no shell expansion
                 capture_output=True,
                 text=True,
                 cwd=workdir,

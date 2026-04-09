@@ -226,7 +226,7 @@ The `docs/` directory contains analysis of the source implementations:
 
 - Hermes Agent v0.7.0+
 - **Skills only**: No additional dependencies — copy skill directories to `~/.hermes/skills/omh/`
-- **With plugin**: Python 3.11+; `pyyaml` optional (falls back to built-in defaults); install `plugins/omh/` to `~/.hermes/plugins/omh/`
+- **With plugin**: Python 3.10+; `pyyaml` optional (graceful fallback to empty config); install `plugins/omh/` to `~/.hermes/plugins/omh/`
 
 ### Development
 
@@ -301,7 +301,7 @@ The v2 plugin (`plugins/omh/`) is installed at `~/.hermes/plugins/omh/` and regi
 
 | Component | What It Does | Status |
 |-----------|-------------|--------|
-| `omh_state` tool (7 actions) | Atomic read/write/check/cancel for `.omh/` state files; `load_role` action for explicit role loading | Shipped |
+| `omh_state` tool (8 actions) | Atomic read/write/check/cancel for `.omh/` state files; `load_role` action for explicit role loading | Shipped |
 | `omh_gather_evidence` tool | Runs build/test/lint commands from an allowlist, captures + truncates output | Shipped |
 | `pre_llm_call` hook | Detects `[omh-role:NAME]` in subagent `user_message`; injects matching role prompt into system context | Shipped |
 | `pre_tool_call` hook | Validates `[omh-role:NAME]` markers in `delegate_task` goals before subagents start; warns on unknown roles | Shipped |

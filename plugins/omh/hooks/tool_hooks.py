@@ -40,7 +40,7 @@ def pre_tool_call(**kwargs) -> dict | None:
     catalog = get_role_catalog()
     if role_name not in catalog:
         available = ", ".join(sorted(catalog.keys())) or "(none)"
-        debug_print(f"pre_tool_call: unknown role '{role_name}' in delegate_task — blocking. Available: {available}")
+        debug_print(f"pre_tool_call: unknown role '{role_name}' in delegate_task — warning only (non-blocking). Available: {available}")
         logger.warning(
             "omh pre_tool_call: unknown role '%s' in delegate_task goal. "
             "Available: %s",

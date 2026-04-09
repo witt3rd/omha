@@ -1,5 +1,3 @@
-role_prompts_dir: ~/.hermes/skills/omh-ralplan/references
-
 roles:
   executor:          {category: implementation}
   verifier:          {category: review}
