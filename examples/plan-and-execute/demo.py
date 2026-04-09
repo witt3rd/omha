@@ -41,7 +41,7 @@ from pathlib import Path
 # Paths
 # ---------------------------------------------------------------------------
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 HERMES_BIN = Path.home() / ".hermes" / "hermes-agent" / "venv" / "bin" / "hermes"
 PLUGIN_SRC = REPO_ROOT / "plugins" / "omh"
 

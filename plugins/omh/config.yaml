@@ -12,6 +12,10 @@ roles:
   test-engineer:     {category: testing}
   debugger:          {category: analysis}
 
+# Debug mode: print role injection and validation events to stdout.
+# Enable via config (debug: true) or environment variable (OMH_DEBUG=1).
+debug: false
+
 state_dir: .omh/state
 staleness_hours: 2
 cancel_ttl_seconds: 30

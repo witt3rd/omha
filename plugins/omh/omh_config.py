@@ -29,6 +29,7 @@ _DEFAULTS: dict[str, Any] = {
         "test-engineer":     {"category": "testing"},
         "debugger":          {"category": "analysis"},
     },
+    "debug": False,
     "state_dir": ".omh/state",
     "staleness_hours": 2,
     "cancel_ttl_seconds": 30,

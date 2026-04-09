@@ -144,9 +144,9 @@ If `skip_validation: true` → advance to Phase 5, exit.
 2. Delegate 3 parallel reviews (exactly 3 = Hermes concurrent limit):
    ```
    delegate_task(tasks=[
-       {goal: "Architectural review", context: "{architect prompt}\n{spec + evidence}"},
-       {goal: "Security review", context: "{security-reviewer prompt}\n{files + evidence}"},
-       {goal: "Code quality review", context: "{code-reviewer prompt}\n{files + evidence}"}
+       {goal: "[omh-role:architect] Architectural review:\n{spec + plan}", context: "{evidence}"},
+       {goal: "[omh-role:security-reviewer] Security review:\n{changed files list}", context: "{evidence}"},
+       {goal: "[omh-role:code-reviewer] Code quality review:\n{changed files list}", context: "{evidence}"}
    ])
    ```
 3. Record verdicts in `validation_verdicts`
