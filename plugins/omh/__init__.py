@@ -3,7 +3,7 @@ OMH Plugin — infrastructure layer for Oh My Hermes skills.
 
 Registers:
   Tools: omh_state, omh_gather_evidence
-  Hooks: pre_llm_call, on_session_end
+  Hooks: pre_llm_call, on_session_end, pre_tool_call
   Skills: omh-ralplan, omh-ralph, omh-deep-interview, omh-autopilot (bundled)
 """
 

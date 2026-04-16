@@ -301,12 +301,16 @@ def test_on_session_end_hook_via_invoke(plugin_dir, isolated_workdir):
 # Contract test: validate our register() matches Hermes PluginContext API
 # ---------------------------------------------------------------------------
 
-def test_register_tool_signature_matches_hermes_contract(plugin_dir):
+def test_register_tool_signature_matches_hermes_contract(plugin_dir, monkeypatch):
     """Verify our register() calls ctx.register_tool with the correct arity.
 
     This test works even WITHOUT Hermes installed by mocking the ctx object
-    and verifying the call signature.
+    and verifying the call signature. _install_skills is monkeypatched to a
+    no-op to avoid writing into the real ~/.hermes/skills/ directory.
     """
+    import plugins.omh as omh_plugin
+    monkeypatch.setattr(omh_plugin, "_install_skills", lambda: None)
+
     calls = {"tools": [], "hooks": []}
 
     class MockCtx:
@@ -322,8 +326,6 @@ def test_register_tool_signature_matches_hermes_contract(plugin_dir):
             assert callable(callback)
             calls["hooks"].append({"hook_name": hook_name, "callback": callback})
 
-    # Ensure the plugin package is importable
-    import plugins.omh as omh_plugin
     omh_plugin.register(MockCtx())
 
     # Verify tools

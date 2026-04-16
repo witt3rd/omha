@@ -73,9 +73,9 @@ write `phase="blocked"`, report "Max iterations reached", exit.
 
 Ralph MUST NOT execute without a plan. Check sources in order:
 
-1. `.omh/state/ralph-tasks.json` — already parsed, skip to Step 3
-2. `.omh/plans/ralplan-*.md` — parse into ralph-tasks.json
-3. `.omh/plans/ralph-plan.md` — parse into ralph-tasks.json
+1. `omh_state(action="check", mode="ralph-tasks")` → `exists=true` — already parsed, skip to Step 3
+2. `.omh/plans/ralplan-*.md` — parse into ralph-tasks state: `omh_state(action="write", mode="ralph-tasks", data={...})`
+3. `.omh/plans/ralph-plan.md` — parse into ralph-tasks state
 4. Nothing found → tell user: "No plan found. Run `omh-ralplan` first."
 
 **Plan parsing rules:**
@@ -102,7 +102,10 @@ omh_state(action="write", mode="ralph", data={
 
 ### Step 3: Pick Next Task
 
-Read `.omh/state/ralph-tasks.json`.
+Read task list:
+```
+tasks = omh_state(action="read", mode="ralph-tasks")
+```
 
 1. If ALL tasks have `passes: true` → go to Step 7 (Final Review)
 2. Find eligible tasks: `passes=false` AND all dependencies met

@@ -54,7 +54,7 @@ def get_config() -> dict[str, Any]:
             with open(path, encoding="utf-8") as f:
                 config = yaml.safe_load(f) or {}
         except ImportError:
-            logger.debug("PyYAML not installed; OMH config not loaded")
+            logger.warning("PyYAML is required for OMH config loading (pip install pyyaml)")
         except Exception as e:
             logger.warning("Failed to load OMH config from %s: %s", path, e)
 

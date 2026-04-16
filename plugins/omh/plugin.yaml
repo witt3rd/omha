@@ -13,5 +13,5 @@ hooks:
   - on_session_end
   - pre_tool_call
 
-optional_dependencies:
-  - pyyaml  # required for config.yaml loading; falls back to built-in defaults if absent
+dependencies:
+  - pyyaml  # required for config.yaml loading
