@@ -10,10 +10,10 @@ Based on: omh-plugin-plan.md (v1), hermes-agent source analysis
 
 | # | Issue | Resolution |
 |---|-------|------------|
-| 1 | **parent_agent not available to plugin tools** (showstopper) | Requires 1-line hermes-agent PR; fallback via thread-local stash documented |
+| 1 | **parent_agent not available to plugin tools** (showstopper) | **Confirmed by source analysis** (see below). omh_delegate descoped from v1; plugin ships 2 tools. |
 | 2 | **Cancel filename mismatch** | Cancel integrated into omh_state; uses `{mode}-state.json` with `cancel_requested` field |
 | 3 | **Model routing may not work** | Descoped from v1; delegate_task has no model param; document as future work |
-| 4 | **8 tools → 3 tools** (Critic simplicity test) | Adopted: omh_state, omh_delegate, omh_gather_evidence |
+| 4 | **8 tools → 2 tools** (Issue #1 resolution + Critic simplicity test) | omh_state + omh_gather_evidence only; omh_delegate deferred pending upstream fix |
 | 5 | **omh_gather_evidence bypasses safety rails** | Command allowlist + configurable approval |
 | 6 | **on_session_start return values ignored** | Context injection moved to pre_llm_call with is_first_turn check |
 | 7 | **session_id dead code** | Removed from v1; no session scoping in v1 |
@@ -24,133 +24,77 @@ Based on: omh-plugin-plan.md (v1), hermes-agent source analysis
 ## Summary
 
 Build the OMH plugin as a Python plugin at `~/.hermes/plugins/omh/` that
-registers **3 MCP-style tools** and **2 lifecycle hooks** via the Hermes
+registers **2 MCP-style tools** and **2 lifecycle hooks** via the Hermes
 PluginContext API. The plugin provides: (1) unified state management with
-atomic writes, metadata envelopes, and cancel signaling, (2) role-aware
-delegation that auto-loads role prompts, (3) evidence gathering with a
-command allowlist, and (4) session hooks for mode awareness and clean
-interruption. Target: **~500 lines** of Python. State stored in
+atomic writes, metadata envelopes, and cancel signaling, (2) evidence
+gathering with a command allowlist, and (3) session hooks for mode awareness
+and clean interruption. Target: **~350 lines** of Python. State stored in
 `.omh/state/`, config in `~/.hermes/plugins/omh/config.yaml`.
 
-**IMPORTANT:** The plugin requires a small hermes-agent PR (Issue #1 below)
-to enable delegation from plugin tools. The plan includes a thread-local
-fallback if the PR is not yet merged, but the PR is the correct fix.
+**Note on omh_delegate:** Role-aware delegation (`omh_delegate`) is descoped
+from v1. Confirmed source analysis shows `delegate_task` is an agent-loop
+tool intercepted before `registry.dispatch` — plugin tools cannot call it
+without access to the live agent reference (`parent_agent`), which the
+plugin dispatch path does not provide. Skills continue to call `delegate_task`
+directly with inlined role prompts. See "Descoped from v1" for details.
 
 ---
 
-## Critical Issue #1: parent_agent Access
+## Critical Issue #1: parent_agent Access — Confirmed Analysis
 
-### The Problem
+### What the Source Confirms
 
-`delegate_task()` requires `parent_agent` (returns error JSON without it).
-The agent loop in `run_agent.py` special-cases `delegate_task` at line 6108:
+**Verified against hermes-agent `model_tools.py` (current HEAD) and official
+developer docs (`website/docs/developer-guide/tools-runtime.md`).**
+
+`delegate_task` is explicitly listed as an **agent-loop tool** — intercepted
+*before* `registry.dispatch` runs:
 
 ```python
-elif function_name == "delegate_task":
-    return _delegate_task(..., parent_agent=self)
-```
+# model_tools.py — actual current source
+_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 
-All other tools go through `handle_function_call()` → `registry.dispatch()`,
-which passes only `task_id=` and `user_task=` as kwargs. Plugin tools
-registered via `ctx.register_tool()` go through `registry.dispatch()` and
-therefore **never receive parent_agent**.
-
-### The Solution: hermes-agent PR (Option D — proper refactor)
-
-The cleanest fix: add `parent_agent` to `handle_function_call()` kwargs and
-pass it through `registry.dispatch()`. This is a ~5-line change in two files:
-
-**model_tools.py** — add param to handle_function_call:
-```python
-def handle_function_call(
-    function_name, function_args, task_id=None,
-    tool_call_id=None, session_id=None, user_task=None,
-    enabled_tools=None,
-    parent_agent=None,          # NEW
-) -> str:
+def handle_function_call(...):   # signature has NO parent_agent param
+    if function_name in _AGENT_LOOP_TOOLS:
+        return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
     ...
-    result = registry.dispatch(
-        function_name, function_args,
-        task_id=task_id, user_task=user_task,
-        parent_agent=parent_agent,      # NEW
-    )
+    result = registry.dispatch(function_name, function_args, ...)
 ```
 
-**run_agent.py** — remove the special-case, pass parent_agent to the
-generic handler:
-```python
-# Remove the elif function_name == "delegate_task" branch
-# Change the else branch to:
-return handle_function_call(
-    function_name, function_args, effective_task_id,
-    tool_call_id=tool_call_id,
-    session_id=self.session_id or "",
-    enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-    parent_agent=self,          # NEW — all tools get it; most ignore it
-)
+The official docs state:
+> *"delegate_task — spawns subagent sessions. These tools' schemas are still
+> registered in the registry, but their handlers return a stub error if
+> dispatch somehow reaches them directly."*
+
+`delegate_task()` in `tools/delegate_tool.py` accepts `parent_agent` as a
+required kwarg (used for cwd resolution and credential pool selection).
+Plugin tools dispatched through `registry.dispatch` have no way to obtain the
+live agent reference — no hook receives it, and `handle_function_call` does
+not accept or forward it.
+
+### The dispatch flow for plugin tools vs. skills
+
+```
+Skill prose: "call delegate_task with goal='...'"
+    → Agent loop intercepts delegate_task (special-case path)
+    → _delegate_task(..., parent_agent=self)   ✅ works
+
+Plugin tool calling delegate_task:
+    → handle_function_call() → registry.dispatch()
+    → Must import tools.delegate_tool and call delegate_task(parent_agent=???)
+    → No parent_agent available                ❌ blocked
 ```
 
-Also remove `delegate_task` from `_AGENT_LOOP_TOOLS` in model_tools.py
-(line 364), since it no longer needs special-casing.
+### Decision: Descope omh_delegate from v1
 
-**Impact:** Zero breaking changes. Existing tool handlers accept `**kwargs`
-and will silently ignore `parent_agent`. Only tools that opt into it (like
-omh_delegate) use it.
+A hermes-agent PR could fix this (~10-line change: add `parent_agent` to
+`handle_function_call` kwargs and pass through `registry.dispatch`). However,
+the PR requires upstream review and acceptance, which is an external dependency
+we cannot control.
 
-### Fallback: Thread-Local Stash (if PR not merged)
-
-If the PR is blocked, use a thread-local to stash the agent reference:
-
-```python
-# omh/_agent_stash.py
-import threading
-_local = threading.local()
-
-def stash_agent(agent):
-    _local.agent = agent
-
-def get_agent():
-    return getattr(_local, 'agent', None)
-```
-
-Inject via the `pre_llm_call` hook (which receives `conversation_history`
-from the agent loop — but NOT the agent itself). Actually, no hook receives
-the agent reference either.
-
-**Better fallback:** Use `pre_tool_call` hook. In `model_tools.py` line 501,
-pre_tool_call is called with `tool_name=, args=, task_id=, session_id=,
-tool_call_id=`. Still no parent_agent.
-
-**Realistic fallback:** Monkey-patch at plugin load time:
-
-```python
-# In register(ctx):
-import run_agent
-_original = run_agent.AIAgent._execute_single_tool_call
-def _patched(self, *args, **kwargs):
-    _local.agent = self
-    return _original(self, *args, **kwargs)
-run_agent.AIAgent._execute_single_tool_call = _patched
-```
-
-This is fragile and version-dependent. **The PR is strongly preferred.**
-
-### Recommendation
-
-Submit the hermes-agent PR as a prerequisite. It's clean, backwards-compatible,
-and benefits all plugins. The omh_delegate tool should check for parent_agent
-in kwargs and return a clear error message if missing (rather than cryptically
-failing):
-
-```python
-def omh_delegate(args, **kwargs):
-    parent_agent = kwargs.get("parent_agent")
-    if not parent_agent:
-        return json.dumps({
-            "error": "omh_delegate requires parent_agent. "
-            "Ensure hermes-agent >= X.Y.Z (PR #NNN)."
-        })
-```
+**v1 ships without omh_delegate.** Skills continue to call `delegate_task`
+directly with inlined role prompts — verbose but fully functional. omh_delegate
+can be revisited once a hermes-agent PR lands.
 
 ---
 
@@ -166,26 +110,26 @@ def omh_delegate(args, **kwargs):
 ├── tools/
 │   ├── __init__.py
 │   ├── state_tool.py     # omh_state (1 unified tool)
-│   ├── delegate_tool.py  # omh_delegate (1 tool)
 │   └── evidence_tool.py  # omh_gather_evidence (1 tool)
 ├── hooks/
 │   ├── __init__.py
-│   └── llm_hooks.py      # pre_llm_call (mode awareness + first-turn injection)
+│   ├── llm_hooks.py      # pre_llm_call (mode awareness + first-turn injection)
 │   └── session_hooks.py  # on_session_end (interruption state)
 └── tests/
     ├── test_state.py
     ├── test_evidence.py
-    ├── test_delegate.py
     └── test_hooks.py
 ```
 
-### Tools (3 total)
+### Tools (2 total)
 
 | Tool | Description |
 |------|-------------|
 | `omh_state` | Unified state: action=read\|write\|clear\|check\|list\|cancel |
-| `omh_delegate` | Role-aware delegation wrapping delegate_task |
 | `omh_gather_evidence` | Run build/test/lint with allowlist + structured results |
+
+> **omh_delegate** is descoped from v1 — see "Critical Issue #1" above.
+> Skills call `delegate_task` directly with inlined role prompts.
 
 ### Hooks (2 total)
 
@@ -251,7 +195,6 @@ description: "Oh My Hermes — infrastructure layer for OMH skills"
 author: "witt3rd"
 provides_tools:
   - omh_state
-  - omh_delegate
   - omh_gather_evidence
 provides_hooks:
   - pre_llm_call
@@ -607,128 +550,20 @@ def gather_evidence(args, **kwargs):
 
 ---
 
-### Task 6: Delegate Tool
+### Task 6: Delegate Tool — DESCOPED FROM V1
 
-**Description:** Register `omh_delegate` — wraps delegate_task with
-role-aware prompt loading and context assembly. Requires parent_agent
-from kwargs (hermes-agent PR prerequisite).
+**Reason:** `delegate_task` is an agent-loop tool intercepted before
+`registry.dispatch`. Plugin tools have no access to the `parent_agent`
+reference required by `delegate_task()`. Confirmed against current
+hermes-agent source (`model_tools.py`, `tools/delegate_tool.py`,
+`website/docs/developer-guide/tools-runtime.md`).
 
-**Files:**
-- `~/.hermes/plugins/omh/tools/delegate_tool.py`
+**Skills are unaffected.** They continue to call `delegate_task` directly
+in skill prose — the agent loop handles it correctly via its special-case
+path with `parent_agent=self`.
 
-**Dependencies:** Task 0 (PR), Task 1, Task 2
-
-**Complexity:** Medium (~150 lines)
-
-**Tool Schema:**
-```python
-{
-    "name": "omh_delegate",
-    "description": (
-        "Delegate work to a role-specific subagent. Automatically loads "
-        "the role prompt and constructs context. Simpler than raw "
-        "delegate_task — just specify the role and goal."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "role": {
-                "type": "string",
-                "description": "Role: executor, verifier, architect, planner, "
-                               "critic, analyst, security-reviewer, code-reviewer, "
-                               "test-engineer, debugger"
-            },
-            "goal": {
-                "type": "string",
-                "description": "What the subagent should accomplish"
-            },
-            "task_context": {
-                "type": "string",
-                "description": "Project context (tech stack, conventions, paths)"
-            },
-            "learnings": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Learnings from prior tasks"
-            },
-            "previous_feedback": {
-                "type": "string",
-                "description": "Feedback from a prior rejection"
-            },
-            "toolsets": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Toolsets for subagent (default: terminal, file, web)"
-            },
-            "max_iterations": {
-                "type": "integer",
-                "description": "Max iterations (default: 50)"
-            }
-        },
-        "required": ["role", "goal"]
-    }
-}
-```
-
-Note: `model_override` removed from v1. The delegate_task() function
-signature (line 510-518 of delegate_tool.py) does NOT accept a model
-parameter. Model selection is controlled by hermes-agent's delegation
-config (`~/.hermes/config.yaml` delegation.provider/model), not per-call.
-This can be revisited in v2 if delegate_task gains model routing.
-
-**Handler logic:**
-```python
-def omh_delegate(args, **kwargs):
-    # 1. Check parent_agent
-    parent_agent = kwargs.get("parent_agent")
-    if not parent_agent:
-        return json.dumps({
-            "error": "omh_delegate requires parent_agent in kwargs. "
-            "Ensure hermes-agent includes the parent_agent-passthrough PR."
-        })
-
-    config = get_config()
-    role = args["role"]
-    goal = args["goal"]
-
-    # 2. Load role prompt
-    role_prompt = _load_role_prompt(role, config["role_prompts_dir"])
-
-    # 3. Build context
-    context_parts = []
-    if role_prompt:
-        context_parts.append(f"# Role: {role.title()}\n\n{role_prompt}")
-    if args.get("task_context"):
-        context_parts.append(f"## Project Context\n\n{args['task_context']}")
-    if args.get("learnings"):
-        context_parts.append(
-            "## Learnings from Prior Tasks\n\n" +
-            "\n".join(f"- {l}" for l in args["learnings"])
-        )
-    if args.get("previous_feedback"):
-        context_parts.append(
-            f"## Previous Rejection Feedback\n\n{args['previous_feedback']}"
-        )
-    context = "\n\n---\n\n".join(context_parts)
-
-    # 4. Call delegate_task
-    from tools.delegate_tool import delegate_task
-    return delegate_task(
-        goal=goal,
-        context=context,
-        toolsets=args.get("toolsets"),
-        max_iterations=args.get("max_iterations"),
-        parent_agent=parent_agent,
-    )
-```
-
-**Acceptance Criteria:**
-- `omh_delegate(role="executor", goal="Implement X")` spawns subagent
-- Role prompt auto-loaded (graceful fallback if missing)
-- Context string includes all provided components
-- Unknown roles fall back with warning
-- Returns delegate_task result (JSON string)
-- Clear error if parent_agent missing
+**Revisit in v2** once a hermes-agent PR lands that passes `parent_agent`
+through `handle_function_call` → `registry.dispatch`.
 
 ---
 
@@ -816,17 +651,15 @@ def on_session_end(**kwargs):
 **Files:**
 - `~/.hermes/plugins/omh/tests/test_state.py`
 - `~/.hermes/plugins/omh/tests/test_evidence.py`
-- `~/.hermes/plugins/omh/tests/test_delegate.py`
 - `~/.hermes/plugins/omh/tests/test_hooks.py`
 
 **Dependencies:** Tasks 1-7
 
-**Complexity:** Medium (~180 lines)
+**Complexity:** Low-Medium (~130 lines)
 
 **Acceptance Criteria:**
 - `test_state.py`: round-trip write/read/clear, atomic safety, staleness, meta envelope with schema_version, cancel signal lifecycle
 - `test_evidence.py`: allowlist enforcement, multi-command, truncation, timeout, max_commands
-- `test_delegate.py`: role prompt loading, context assembly (mock delegate_task)
 - `test_hooks.py`: pre_llm_call first-turn vs subsequent, on_session_end interruption state
 - All tests use tmp_path (no real filesystem side effects)
 - Tests pass with `python -m pytest ~/.hermes/plugins/omh/tests/ -v`
@@ -842,16 +675,33 @@ def on_session_end(**kwargs):
 **Complexity:** Medium
 
 **Acceptance Criteria:**
-- State: `omh_state(action="read", mode="ralph")` replaces manual JSON
-- Delegation: `omh_delegate(role="executor", ...)` replaces manual prompt assembly
-- Evidence: `omh_gather_evidence(commands=[...])` replaces manual subprocess
-- Cancel: `omh_state(action="cancel_check", mode="ralph")` replaces manual file reads
-- Skill is ~40% shorter
+- State: `omh_state(action="read", mode="ralph")` replaces manual JSON read/write/atomic-rename prose
+- Evidence: `omh_gather_evidence(commands=[...])` replaces manual build/test/lint subprocess prose
+- Cancel: `omh_state(action="cancel_check", mode="ralph")` replaces manual cancel file reads
+- Delegation: unchanged — skills continue to call `delegate_task` directly (omh_delegate descoped)
+- Skill is ~25% shorter (state + evidence boilerplate removed)
 - Works in a real Hermes session with plugin installed
 
 ---
 
 ## Descoped from v1
+
+### omh_delegate (was Task 6)
+
+`omh_delegate` was designed to wrap `delegate_task` with role prompt
+auto-loading. Descoped because `delegate_task` is an agent-loop tool that
+cannot be reached from plugin tool handlers:
+
+- `model_tools.py`: `_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}` — intercepted before `registry.dispatch`
+- `tools/delegate_tool.py`: `delegate_task()` requires `parent_agent` kwarg (cwd + credential pool resolution)
+- `handle_function_call()`: no `parent_agent` parameter; plugin tools dispatched via `registry.dispatch` cannot obtain it
+- Official docs confirm: *"handlers return a stub error if dispatch somehow reaches them directly"*
+
+**Impact on skills:** Zero. Skills call `delegate_task` in prose — the agent
+loop handles it via its special-case path. Delegation remains verbose but
+functional. omh_delegate revisited in v2 if a hermes-agent PR lands.
+
+---
 
 ### Model Routing (was in v1 config)
 
@@ -920,9 +770,7 @@ advanced users.
 ## Dependency Graph
 
 ```
-Task 0 (hermes-agent PR) ─────────────────────────┐
-                                                    v
-Task 1 (Scaffold)                            Task 6 (Delegate)
+Task 1 (Scaffold)
   ├─> Task 2 (Config)
   │     ├─> Task 3 (State Engine)
   │     │     └─> Task 4 (State Tool)
@@ -930,11 +778,13 @@ Task 1 (Scaffold)                            Task 6 (Delegate)
   └─> Task 7 (Hooks) ← depends on Task 3
         └─> Task 8 (Tests) ← depends on all above
               └─> Task 9 (Skill Refactor)
+
+Task 6 (Delegate Tool) — DESCOPED. No dependency path.
+Task 0 (hermes-agent PR) — DESCOPED. Prerequisite only for Task 6.
 ```
 
-**Critical path:** 0 → 1 → 2 → 3 → 4 → 7 → 8 → 9
-**Parallelizable:** Tasks 4, 5, 6 can be built in parallel after Task 2+3
-(Task 6 also needs Task 0)
+**Critical path:** 1 → 2 → 3 → 4 → 7 → 8 → 9
+**Parallelizable:** Tasks 4 and 5 can be built in parallel after Task 2+3
 
 ---
 
@@ -942,10 +792,10 @@ Task 1 (Scaffold)                            Task 6 (Delegate)
 
 | Day | Tasks | Milestone |
 |-----|-------|-----------|
-| 1   | 0, 1, 2, 3 | PR submitted, plugin loads, state engine complete |
-| 2   | 4, 5, 6 | All 3 tools registered and functional |
-| 3   | 7, 8   | Hooks + test suite |
-| 4   | 9      | omh-ralph refactored and working |
+| 1   | 1, 2, 3 | Plugin loads, state engine complete |
+| 2   | 4, 5    | Both tools registered and functional |
+| 3   | 7, 8    | Hooks + test suite |
+| 4   | 9       | omh-ralph refactored and working |
 
 ---
 

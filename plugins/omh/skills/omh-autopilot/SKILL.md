@@ -104,7 +104,12 @@ omh_state(action="write", mode="autopilot", data={
 
 Each invocation performs **exactly ONE ralph iteration**:
 
-1. Load `omh-ralph` skill, follow its procedure (picks one task, executes, verifies)
+1. Run one ralph iteration via `delegate_task` with the omh-ralph skill context:
+   ```
+   delegate_task(goal="[omh-role:executor] Follow the omh-ralph skill procedure:
+     read state, pick the next incomplete task, execute it, verify, update state, exit.",
+     context="<current ralph state + plan file contents>")
+   ```
 2. After ralph completes its step, check ralph status:
    ```
    ralph = omh_state(action="check", mode="ralph")
@@ -119,9 +124,10 @@ Each invocation performs **ONE QA cycle**. Starts in fresh session (context_chec
 
 If `skip_qa: true` → advance to Phase 4, exit.
 
-1. Gather evidence:
+1. Gather evidence using the project's actual build/test/lint commands (check for
+   Makefile, package.json, Cargo.toml, pyproject.toml, etc. to determine the right commands):
    ```
-   evidence = omh_gather_evidence(commands=["npm run build", "npm test", "npm run lint"])
+   evidence = omh_gather_evidence(commands=["<build>", "<test>", "<lint>"])
    ```
 2. If `evidence.all_pass` → advance: `phase: "validation"`, `context_checkpoint: true`, exit
 3. If failures:
@@ -137,16 +143,16 @@ Each invocation performs **ONE validation round**. Starts in fresh session.
 
 If `skip_validation: true` → advance to Phase 5, exit.
 
-1. Gather evidence:
+1. Gather evidence using the project's actual build/test commands:
    ```
-   evidence = omh_gather_evidence(commands=["npm run build", "npm test"])
+   evidence = omh_gather_evidence(commands=["<build>", "<test>"])
    ```
 2. Delegate 3 parallel reviews (exactly 3 = Hermes concurrent limit):
    ```
    delegate_task(tasks=[
-       {goal: "Architectural review", context: "{architect prompt}\n{spec + evidence}"},
-       {goal: "Security review", context: "{security-reviewer prompt}\n{files + evidence}"},
-       {goal: "Code quality review", context: "{code-reviewer prompt}\n{files + evidence}"}
+       {goal: "[omh-role:architect] Architectural review:\n{spec + plan}", context: "{evidence}"},
+       {goal: "[omh-role:security-reviewer] Security review:\n{changed files list}", context: "{evidence}"},
+       {goal: "[omh-role:code-reviewer] Code quality review:\n{changed files list}", context: "{evidence}"}
    ])
    ```
 3. Record verdicts in `validation_verdicts`

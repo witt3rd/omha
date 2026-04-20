@@ -1,11 +1,17 @@
 name: omh
-version: 0.1.0
-description: "Oh My Hermes — infrastructure layer for OMH multi-agent orchestration skills"
-author: "Donald Thompson"
-requires_env: []
-provides_tools:
+version: "0.1.0"
+description: "Oh My Hermes — infrastructure layer for OMH skills (state management, evidence gathering, mode awareness)"
+entry_point: plugin
+requires_python: ">=3.10"
+
+tools:
   - omh_state
   - omh_gather_evidence
-provides_hooks:
-  - on_session_end
+
+hooks:
   - pre_llm_call
+  - on_session_end
+  - pre_tool_call
+
+dependencies:
+  - pyyaml  # required for config.yaml loading

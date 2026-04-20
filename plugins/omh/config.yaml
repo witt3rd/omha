@@ -1,48 +1,80 @@
-# Oh My Hermes plugin configuration
-# Copy to ~/.hermes/plugins/omh/config.yaml
+# project_root: /absolute/path/to/project  # optional; defaults to cwd() at runtime
 
-# State directory (relative to cwd)
+roles:
+  executor:          {category: implementation}
+  verifier:          {category: review}
+  architect:         {category: analysis}
+  planner:           {category: planning}
+  critic:            {category: analysis}
+  analyst:           {category: analysis}
+  security-reviewer: {category: review}
+  code-reviewer:     {category: review}
+  test-engineer:     {category: testing}
+  debugger:          {category: analysis}
+
+# Debug mode: print role injection and validation events to stdout.
+# Enable via config (debug: true) or environment variable (OMH_DEBUG=1).
+debug: false
+
 state_dir: .omh/state
-logs_dir: .omh/logs
+staleness_hours: 2
+cancel_ttl_seconds: 30
 
-# Staleness threshold in seconds (2 hours)
-staleness_threshold: 7200
-
-# Evidence gathering — allowed command prefixes
-# Commands not matching any prefix are rejected
-evidence_allowlist:
-  - "npm "
-  - "npx "
-  - "yarn "
-  - "pnpm "
-  - "cargo "
-  - "make"
-  - "cmake "
-  - "go "
-  - "python "
-  - "python3 "
-  - "pytest"
-  - "pip "
-  - "uv "
-  - "ruff "
-  - "mypy "
-  - "tsc"
-  - "eslint"
-  - "prettier"
-  - "rustfmt"
-  - "clippy"
-  - "gradle"
-  - "mvn "
-  - "dotnet "
-  - "mix "
-  - "bundle "
-  - "rake "
-
-# Max commands per evidence gathering call
-evidence_max_commands: 10
-
-# Evidence output truncation (chars, keep the tail)
-evidence_truncate: 2000
-
-# Role prompt directory (for future omh_delegate tool)
-# role_prompts_dir: ~/.hermes/skills/omh-ralplan/references
+evidence:
+  # Allowlist controls which commands omh_gather_evidence may run.
+  # Each entry is a token-prefix match: the leading tokens of the command must exactly
+  # equal the entry's tokens. E.g. "npm test" matches "npm test --verbose" but NOT
+  # "npm testing-malicious". Add entries here to expand what the agent can verify.
+  allowlist_prefixes:
+    # npm — specific test/build/lint subcommands only (not "npm " which permits npm publish, npm install, etc.)
+    - "npm test"
+    - "npm run test"
+    - "npm run build"
+    - "npm run lint"
+    - "npm run typecheck"
+    - "npm run check"
+    # npx — specific trusted runners only (not "npx " which permits arbitrary package execution)
+    - "npx jest"
+    - "npx vitest"
+    - "npx mocha"
+    - "npx eslint"
+    - "npx tsc"
+    # yarn / pnpm
+    - "yarn test"
+    - "yarn build"
+    - "yarn lint"
+    - "pnpm test"
+    - "pnpm build"
+    - "pnpm lint"
+    # Rust
+    - "cargo test"
+    - "cargo build"
+    - "cargo check"
+    - "cargo clippy"
+    - "rustfmt --check"  # Rust formatter check
+    # Go
+    - "go test"
+    - "go build"
+    - "go vet"
+    # Python
+    - "python -m pytest"
+    - "python -m mypy"
+    - "python3 -m pytest"
+    - "python3 -m mypy"
+    - "uv run pytest"  # uv package manager - pytest
+    - "uv run mypy"    # uv package manager - mypy
+    # Linters / formatters
+    - "ruff check"
+    - "ruff format --check"
+    - "black --check"
+    - "eslint"
+    - "tsc"
+    - "prettier --check"  # Prettier formatter check
+    # Make — specific safe targets only
+    - "make test"
+    - "make build"
+    - "make check"
+    - "make lint"
+  max_commands: 10
+  default_timeout: 120
+  default_truncate: 2000

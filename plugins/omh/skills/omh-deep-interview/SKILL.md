@@ -10,7 +10,7 @@ tags: [interview, requirements, socratic, ambiguity, specification]
 category: omh
 metadata:
   hermes:
-    requires_toolsets: [terminal]
+    requires_toolsets: [terminal, omh]
 ---
 
 # OMH Deep Interview — Requirements Specification Through Conversation

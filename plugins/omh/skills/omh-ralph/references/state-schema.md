@@ -5,9 +5,8 @@
 ```
 .omh/
 ├── state/
-│   ├── ralph-state.json        # Loop state (deleted on completion)
+│   ├── ralph-state.json        # Loop state + cancel signal (deleted on completion)
 │   ├── ralph-tasks.json        # Task list with acceptance criteria (deleted on completion)
-│   └── ralph-cancel.json       # Cancel signal, 30-second TTL (deleted on completion)
 ├── logs/
 │   └── ralph-progress.md       # Append-only execution log (preserved)
 ```
@@ -96,17 +95,25 @@ Each task MUST be one atomic unit of work:
 - Can be independently verified
 - Multi-part tasks are split during plan parsing
 
-## ralph-cancel.json
+## Cancel Signal (inside ralph-state.json)
+
+Cancel signals are stored inside `ralph-state.json`, not a separate file. The following fields are set when cancellation is requested:
 
 ```json
 {
-  "requested_at": "2026-04-07T07:00:00Z",
-  "requested_by": "user|circuit-breaker|context-limit",
-  "reason": "User requested cancellation"
+  "cancel_requested": true,
+  "cancel_reason": "user request",
+  "cancel_at": "2024-..."
 }
 ```
 
-30-second TTL. Checked at the START of each invocation. After 30 seconds, treated as stale and ignored (prevents orphaned cancel signals from blocking future runs).
+- **cancel_requested**: `true` when cancellation has been requested
+- **cancel_reason**: reason string (e.g. `"user request"`, `"circuit-breaker"`, `"context-limit"`)
+- **cancel_at**: ISO timestamp when cancel was requested
+
+Check cancel status via `omh_state(action="cancel_check", mode="ralph")` — returns `{cancelled, reason, requested_at}`.
+
+The cancel signal expires after `cancel_ttl_seconds` (default 30s) and is auto-cleared. Checked at the START of each invocation; stale signals are ignored (prevents orphaned cancel signals from blocking future runs).
 
 ## Error Fingerprinting
 

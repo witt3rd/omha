@@ -4,7 +4,7 @@ Multi-agent orchestration skills for [Hermes Agent](https://github.com/NousResea
 
 ## What This Is
 
-OMH brings structured multi-agent workflows to Hermes through composable skills — no code changes, no plugins, no forks. Install individual skills and use them standalone or as a pipeline.
+OMH brings structured multi-agent workflows to Hermes through composable skills and an optional plugin that adds hook-based role injection, atomic state management, and evidence gathering. Skills work standalone with zero dependencies; the plugin (`plugins/omh/`) reduces boilerplate and enables token-efficient role injection.
 
 | Skill | What It Does | Status |
 |-------|-------------|--------|
@@ -127,7 +127,7 @@ Phase 5: Cleanup       → delete state files, report summary
 
 | OMC Pattern | OMH Adaptation | Why |
 |---|---|---|
-| `spawn_agent` with role prompts | `delegate_task` with role text in context field | Hermes subagents receive goal + context, not separate system prompts |
+| `spawn_agent` with role prompts | `[omh-role:NAME]` marker in goal; `pre_llm_call` hook injects role prompt into subagent system prompt only | Parent context never loads role text — zero token overhead in the parent session |
 | `persistent-mode.cjs` (mechanical stop prevention) | One-task-per-invocation + state files | Hermes has no stop hook; state-based resumability is more robust than prompt-based persistence |
 | 6 concurrent child agents | 3 concurrent (Hermes `MAX_CONCURRENT_CHILDREN`) | Batch into groups of 3; Phase 4 validation fits exactly |
 | Float ambiguity scores (0.0-1.0) with auto-exit gate | Coarse bins (HIGH/MEDIUM/LOW/CLEAR) with user-confirmed exit | LLM self-assessment lacks the precision to justify decimal thresholds |
@@ -153,6 +153,30 @@ Eight shared role prompts give subagents precise behavioral instructions:
 | **Security Reviewer** | Vulnerabilities, trust boundaries, injection vectors | autopilot (validation phase) |
 | **Test Engineer** | Test strategy, coverage, edge cases, flaky test hardening | autopilot (QA phase) |
 | **Debugger** | Root cause analysis, hypothesis testing, minimal targeted fixes | ralph (error diagnosis) |
+
+### How Role Injection Works (v2 Plugin)
+
+With the v2 plugin installed, skills use `[omh-role:NAME]` markers in the `delegate_task` goal string instead of embedding role prompt text inline:
+
+```python
+# In skill prose — no role file loading, no context pollution:
+delegate_task(
+    goal="[omh-role:executor] Implement the following task:\n\n<task>...",
+    context="<project context only>"
+)
+```
+
+The Hermes `pre_llm_call` hook fires at the start of each subagent session, detects the marker in `user_message` (which equals the `goal` string), loads the matching role file from `plugins/omh/references/role-{name}.md`, and injects it into the subagent's system prompt via `{"context": ...}`. The role text never passes through the parent agent's context window.
+
+A `pre_tool_call` hook validates `[omh-role:NAME]` markers before the subagent starts, warning immediately on unknown role names (fail-fast for typos).
+
+**Fallback**: `omh_state(action="load_role", role="NAME")` returns the role prompt as a string for skills that need it explicitly.
+
+**Debug mode**: Set `OMH_DEBUG=1` (env var) or `debug: true` in `config.yaml` to see injection events:
+```
+[OMH DEBUG] pre_tool_call: delegate_task with role 'executor' detected
+[OMH DEBUG] pre_llm_call: injecting role 'executor' into subagent system prompt
+```
 
 ## State Convention
 
@@ -201,7 +225,17 @@ The `docs/` directory contains analysis of the source implementations:
 ## Requirements
 
 - Hermes Agent v0.7.0+
-- No additional dependencies, plugins, or code changes
+- **Skills only**: No additional dependencies — copy skill directories to `~/.hermes/skills/omh/`
+- **With plugin**: Python 3.10+; `pyyaml` optional (graceful fallback to empty config); install `plugins/omh/` to `~/.hermes/plugins/omh/`
+
+### Development
+
+To run the plugin test suite:
+
+```bash
+pip install -e ".[dev]"
+python -m pytest plugins/omh/tests/
+```
 
 ## Hermes Constraints
 
@@ -256,31 +290,36 @@ These aren't gaps — they're choices made during consensus review:
 ## Roadmap
 
 ```
-v1.0 (current): Skills only — verbose but functional, zero dependencies
-v2.0 (next):    Hermes plugin — infrastructure layer for natural skills
+v1.0:           Skills only — verbose but functional, zero dependencies
+v2.0 (current): Hermes plugin — infrastructure layer with hook-based role injection
 v3.0 (future):  Upstream PR to NousResearch/hermes-agent optional-skills/
 ```
 
-### v2.0: The Plugin Layer
+### v2.0: The Plugin Layer (Shipped)
 
-v1.0 skills work but are verbose — roughly half of each SKILL.md is infrastructure
-plumbing (loading role prompts, constructing context strings, managing state files)
-rather than workflow logic. This is because OMC skills get infrastructure from Claude
-Code's plugin scoping: role prompt auto-loading, model routing, lifecycle hooks. Our
-skills encode all of that in prose.
+The v2 plugin (`plugins/omh/`) is installed at `~/.hermes/plugins/omh/` and registers custom tools and hooks that eliminate the infrastructure plumbing from skill prose:
 
-The v2.0 plugin (`~/.hermes/plugins/omh/`) would register custom tools and hooks:
-
-| Component | What It Does | Impact |
+| Component | What It Does | Status |
 |-----------|-------------|--------|
-| `omh_delegate` tool | Wraps delegate_task with auto role prompt loading + model routing | Delegation shrinks from a paragraph to one tool call |
-| `omh_state_*` tools | Atomic read/write/check for `.omh/` state files | Eliminates manual JSON parsing in skills |
-| `omh_gather_evidence` tool | Runs build/test/lint, captures + truncates output | Verification boilerplate disappears |
-| `on_session_end` hook | Ensures clean state preservation when OMH modes are active | Mechanical safety net for persistence |
-| Model tier routing | Maps roles to Haiku/Sonnet/Opus via config | 30-50% token cost savings |
+| `omh_state` tool (8 actions) | Atomic read/write/check/cancel for `.omh/` state files; `load_role` action for explicit role loading | Shipped |
+| `omh_gather_evidence` tool | Runs build/test/lint commands from an allowlist, captures + truncates output | Shipped |
+| `pre_llm_call` hook | Detects `[omh-role:NAME]` in subagent `user_message`; injects matching role prompt into system context | Shipped |
+| `pre_tool_call` hook | Validates `[omh-role:NAME]` markers in `delegate_task` goals before subagents start; warns on unknown roles | Shipped |
+| `on_session_end` hook | Writes `_interrupted_at` to active mode state on unexpected exit | Shipped |
+| Model tier routing | Maps roles to Haiku/Sonnet/Opus via config | Roadmap |
 
-Skills would stay the same but get shorter — expressing intent instead of mechanism.
-See [docs/plugin-proposal.md](docs/plugin-proposal.md) for the full design.
+The key architectural insight for role injection: `delegate_task` passes `goal` as `user_message` to the subagent's `run_conversation()`. The `pre_llm_call` hook receives this as `user_message` on `is_first_turn=True`, making it the natural injection point — no new Hermes primitives required.
+
+Skills express intent instead of mechanism. Compare v1 vs v2 delegation:
+
+```markdown
+# v1 skill prose (verbose — role text inlined, state loaded manually)
+Load the executor role from ~/.hermes/skills/omh-ralplan/references/role-executor.md
+and pass it in the context field of delegate_task alongside the task definition...
+
+# v2 skill prose (concise — hook handles injection)
+delegate_task(goal="[omh-role:executor] Implement: {task}", context="{project context}")
+```
 
 ## Distribution
 
