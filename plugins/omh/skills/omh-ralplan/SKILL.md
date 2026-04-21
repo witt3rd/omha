@@ -104,21 +104,30 @@ Also write a summary to the user with the key design decisions that emerged from
 
 ## State Management
 
+State is per-instance, keyed on the plan slug (`instance_id="{slug}"`).
+Multiple ralplan sessions on different goals can run concurrently.
+
 If the `omh` plugin is available, use it for state:
 ```
-omh_state(action="write", mode="ralplan", data={
+omh_state(action="write", mode="ralplan", instance_id="{slug}", data={
     "goal": "...", "round": 1,
     "phase": "planner|architect|critic|complete",
     "consensus": false, "plan_file": ".omh/plans/ralplan-{slug}.md"
 })
 ```
 
-If the plugin is not available, write `.omh/state/ralplan-state.json` manually.
+If the plugin is not available, write `.omh/state/ralplan--{slug}.json` manually.
 
-If a ralplan session is interrupted, check for existing state and resume from the last completed phase:
+If a ralplan session is interrupted, list active instances and resume from the
+last completed phase:
 ```
-state = omh_state(action="read", mode="ralplan")
+listed = omh_state(action="list_instances", mode="ralplan")
+state  = omh_state(action="read", mode="ralplan", instance_id="{slug}")
 ```
+
+> **Singleton fallback (legacy).** Omitting `instance_id` writes
+> `.omh/state/ralplan-state.json`. Acceptable only when running one
+> ralplan at a time.
 
 ## Deliberate Mode (--deliberate)
 

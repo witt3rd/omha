@@ -102,12 +102,61 @@ def state_init() -> dict:
 
 
 _MODE_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+_INSTANCE_RAW_MAX = 200          # reject anything obviously absurd
+_INSTANCE_SLUG_MAX = 80          # post-slugification cap
 
 
-def _state_path(mode: str) -> Path:
+def _slugify_instance(raw: str) -> str:
+    """Normalize an instance_id to a filesystem-safe slug.
+
+    Lowercase, [a-z0-9-] only, collapse runs of dashes, strip leading/trailing
+    dashes, cap at 80 chars. Raises ValueError if the input is empty after
+    normalization (caller should fall back to default singleton path).
+    """
+    if not isinstance(raw, str):
+        raise ValueError(f"instance_id must be a string, got {type(raw).__name__}")
+    if len(raw) > _INSTANCE_RAW_MAX:
+        raise ValueError(f"instance_id too long ({len(raw)} chars > {_INSTANCE_RAW_MAX})")
+    s = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
+    if not s:
+        raise ValueError(f"instance_id {raw!r} normalizes to empty slug")
+    return s[:_INSTANCE_SLUG_MAX].strip("-")
+
+
+def _state_path(mode: str, instance_id: str | None = None) -> Path:
     if not _MODE_RE.match(mode):
         raise ValueError(f"Invalid mode name: {mode!r} (only [a-zA-Z0-9_-] allowed)")
-    return _state_dir() / f"{mode}-state.json"
+    if instance_id is None:
+        return _state_dir() / f"{mode}-state.json"
+    slug = _slugify_instance(instance_id)
+    # NOTE: '--' separator chosen so per-instance files can be unambiguously
+    # parsed even when mode names contain '-' (e.g. deep-research, deep-interview).
+    # _slugify_instance collapses runs of '-' to single '-', so '--' never
+    # appears inside slug.
+    return _state_dir() / f"{mode}--{slug}.json"
+
+
+def _lock_path(mode: str, lock_key: str) -> Path:
+    if not _MODE_RE.match(mode):
+        raise ValueError(f"Invalid mode name: {mode!r} (only [a-zA-Z0-9_-] allowed)")
+    slug = _slugify_instance(lock_key)
+    return _state_dir() / f"{mode}--{slug}.lock"
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if a process with this pid exists. Best-effort, POSIX only."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but is owned by someone else — treat as alive.
+        return True
+    except Exception:
+        return False
 
 
 def _now_iso() -> str:
@@ -153,10 +202,10 @@ def _invalidate_list_cache() -> None:
     _list_cache["expires_at"] = 0.0
 
 
-def state_read(mode: str) -> dict:
-    """Read .omh/state/{mode}-state.json.
+def state_read(mode: str, instance_id: str | None = None) -> dict:
+    """Read .omh/state/{mode}-state.json (or {mode}-{instance_id}.json).
     Returns {exists, data, stale, age_seconds}. Data stripped of _meta."""
-    path = _state_path(mode)
+    path = _state_path(mode, instance_id)
     if not path.exists():
         return {"exists": False, "data": {}, "stale": False, "age_seconds": None}
 
@@ -189,11 +238,11 @@ def state_read(mode: str) -> dict:
 
 _STATE_WARN_SIZE = 100_000  # 100KB — warn but still write; large state may indicate a design issue
 
-def state_write(mode: str, data: dict) -> dict:
+def state_write(mode: str, data: dict, instance_id: str | None = None) -> dict:
     """Atomic write with _meta envelope. Returns {success, path}."""
     if not isinstance(data, dict):
         return {"success": False, "error": "data must be a dict"}
-    path = _state_path(mode)
+    path = _state_path(mode, instance_id)
     wrapped = _wrap_meta(mode, data)
     try:
         serialized = json.dumps(wrapped, indent=2, ensure_ascii=False)
@@ -210,9 +259,9 @@ def state_write(mode: str, data: dict) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def state_clear(mode: str) -> dict:
+def state_clear(mode: str, instance_id: str | None = None) -> dict:
     """Delete state file. Returns {cleared, path}."""
-    path = _state_path(mode)
+    path = _state_path(mode, instance_id)
     if not path.exists():
         return {"cleared": True, "existed": False, "path": str(path)}
     try:
@@ -223,9 +272,9 @@ def state_clear(mode: str) -> dict:
         return {"cleared": False, "path": str(path), "error": str(e)}
 
 
-def state_check(mode: str) -> dict:
+def state_check(mode: str, instance_id: str | None = None) -> dict:
     """Quick status: {exists, active, stale, phase, age_seconds, iteration}."""
-    result = state_read(mode)
+    result = state_read(mode, instance_id)
     data = result.get("data", {})
     check = {
         "exists": result["exists"],
@@ -241,7 +290,12 @@ def state_check(mode: str) -> dict:
 
 
 def state_list_active() -> dict:
-    """List all modes with active state. Cached for 5 seconds."""
+    """List all active state files across all modes/instances. Cached for 5 seconds.
+
+    Discovers both singleton files ({mode}-state.json) and per-instance files
+    ({mode}-{instance_id}.json). For per-instance files, the listed entry
+    includes both `mode` and `instance_id`.
+    """
     now = time.monotonic()
     if _list_cache["result"] is not None and now < _list_cache["expires_at"]:
         return _list_cache["result"]
@@ -249,11 +303,26 @@ def state_list_active() -> dict:
     state_dir = _state_dir()
     modes = []
     try:
-        for p in sorted(state_dir.glob("*-state.json")):
-            mode = p.stem.removesuffix("-state")
-            check = state_check(mode)
-            if check["exists"] and check["active"]:
-                modes.append({"mode": mode, **check})
+        for p in sorted(state_dir.glob("*.json")):
+            stem = p.stem
+            # Per-instance: {mode}--{instance_id} (check first; '--' is unambiguous)
+            if "--" in stem:
+                mode, _, instance_id = stem.partition("--")
+                if not _MODE_RE.match(mode) or not instance_id:
+                    continue
+                check = state_check(mode, instance_id)
+                if check["exists"] and check["active"]:
+                    modes.append({"mode": mode, "instance_id": instance_id, **check})
+                continue
+            # Singleton: {mode}-state
+            if stem.endswith("-state"):
+                mode = stem[:-len("-state")]
+                if not _MODE_RE.match(mode):
+                    continue
+                check = state_check(mode)
+                if check["exists"] and check["active"]:
+                    modes.append({"mode": mode, **check})
+                continue
     except Exception as e:
         logger.warning("state_list_active error: %s", e)
 
@@ -263,9 +332,38 @@ def state_list_active() -> dict:
     return result
 
 
-def state_cancel(mode: str, reason: str = "user request", requested_by: str = "user") -> dict:
+def state_list_instances(mode: str) -> dict:
+    """List all instance state files for a given mode.
+
+    Returns {instances: [{instance_id, exists, active, stale, phase, age_seconds, iteration}, ...]}.
+    Includes the singleton (instance_id=None) if it exists. Does not check the
+    'active' flag — use state_list_active() for that filter.
+    """
+    if not _MODE_RE.match(mode):
+        raise ValueError(f"Invalid mode name: {mode!r}")
+    state_dir = _state_dir()
+    out = []
+    try:
+        # Singleton
+        singleton = state_dir / f"{mode}-state.json"
+        if singleton.exists():
+            out.append({"instance_id": None, **state_check(mode)})
+        # Per-instance — match {mode}--*.json
+        for p in sorted(state_dir.glob(f"{mode}--*.json")):
+            stem = p.stem
+            instance_id = stem[len(mode) + 2:]  # +2 to skip '--'
+            if not instance_id:
+                continue
+            out.append({"instance_id": instance_id, **state_check(mode, instance_id)})
+    except Exception as e:
+        logger.warning("state_list_instances(%s) error: %s", mode, e)
+    return {"mode": mode, "instances": out}
+
+
+def state_cancel(mode: str, reason: str = "user request", requested_by: str = "user",
+                 instance_id: str | None = None) -> dict:
     """Set cancel_requested=True in the mode's state file."""
-    result = state_read(mode)
+    result = state_read(mode, instance_id)
     if result["exists"]:
         data = result["data"]
     else:
@@ -276,12 +374,12 @@ def state_cancel(mode: str, reason: str = "user request", requested_by: str = "u
     data["cancel_reason"] = reason
     data["cancel_at"] = _now_iso()
     data["cancel_requested_by"] = requested_by
-    return state_write(mode, data)
+    return state_write(mode, data, instance_id)
 
 
-def state_check_cancel(mode: str) -> dict:
+def state_check_cancel(mode: str, instance_id: str | None = None) -> dict:
     """Check if cancel_requested is set and within TTL. Clears expired signals."""
-    result = state_read(mode)
+    result = state_read(mode, instance_id)
     if not result["exists"]:
         return {"cancelled": False, "reason": None, "requested_at": None}
 
@@ -307,7 +405,7 @@ def state_check_cancel(mode: str) -> dict:
         data.pop("cancel_reason", None)
         data.pop("cancel_at", None)
         data.pop("cancel_requested_by", None)
-        state_write(mode, data)
+        state_write(mode, data, instance_id)
         return {"cancelled": False, "reason": None, "requested_at": None}
 
     return {
@@ -315,3 +413,119 @@ def state_check_cancel(mode: str) -> dict:
         "reason": data.get("cancel_reason"),
         "requested_at": cancel_at,
     }
+
+
+# ---------------------------------------------------------------------------
+# Advisory locks (used by ralph/autopilot to prevent concurrent runs on the
+# same plan/goal). Lockfile format is JSON: {pid, session_id, started_at,
+# instance_id?, holder_note?}.
+# ---------------------------------------------------------------------------
+
+
+def state_lock_acquire(mode: str, lock_key: str, session_id: str | None = None,
+                       holder_note: str | None = None) -> dict:
+    """Acquire an advisory lock keyed on (mode, lock_key).
+
+    Returns:
+      {"acquired": True, "path": ...} on success.
+      {"acquired": False, "held_by": {pid, session_id, started_at, ...}, "stale": bool, "path": ...}
+        when another holder has the lock.
+
+    Stale locks (pid no longer alive) are auto-released and the acquire retries
+    once. Lock file content is the same JSON envelope as state files (with _meta).
+    """
+    path = _lock_path(mode, lock_key)
+    payload = {
+        "pid": os.getpid(),
+        "session_id": session_id or "",
+        "started_at": _now_iso(),
+        "lock_key": lock_key,
+    }
+    if holder_note:
+        payload["holder_note"] = holder_note
+
+    for attempt in range(2):
+        # O_EXCL: atomic create-or-fail
+        try:
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                         stat.S_IRUSR | stat.S_IWUSR)
+        except FileExistsError:
+            existing = _read_lock(path)
+            held_pid = int(existing.get("pid") or 0)
+            if held_pid and not _pid_alive(held_pid):
+                # Stale lock — remove and retry once.
+                logger.warning("Removing stale lock %s (pid=%d not alive)", path, held_pid)
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                if attempt == 0:
+                    continue
+            return {
+                "acquired": False,
+                "held_by": existing,
+                "stale": False,
+                "path": str(path),
+            }
+        else:
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                return {"acquired": True, "path": str(path), "holder": payload}
+            except Exception as e:
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return {"acquired": False, "error": str(e), "path": str(path)}
+    # Should be unreachable.
+    return {"acquired": False, "path": str(path), "error": "lock acquire exhausted retries"}
+
+
+def _read_lock(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def state_lock_release(mode: str, lock_key: str, session_id: str | None = None,
+                       force: bool = False) -> dict:
+    """Release an advisory lock.
+
+    By default only releases if the holder's session_id matches (or the holder's
+    pid is dead). Pass force=True to override (used by `cancel`/admin paths).
+    """
+    path = _lock_path(mode, lock_key)
+    if not path.exists():
+        return {"released": True, "existed": False, "path": str(path)}
+    holder = _read_lock(path)
+    holder_sid = holder.get("session_id") or ""
+    holder_pid = int(holder.get("pid") or 0)
+    if not force:
+        if session_id and holder_sid and session_id != holder_sid:
+            if holder_pid and _pid_alive(holder_pid):
+                return {
+                    "released": False,
+                    "path": str(path),
+                    "held_by": holder,
+                    "error": "session_id mismatch and holder is alive; pass force=True to override",
+                }
+    try:
+        path.unlink()
+        return {"released": True, "existed": True, "path": str(path), "prior_holder": holder}
+    except Exception as e:
+        return {"released": False, "path": str(path), "error": str(e)}
+
+
+def state_lock_check(mode: str, lock_key: str) -> dict:
+    """Inspect a lock without modifying it. Returns {held, holder, stale, path}."""
+    path = _lock_path(mode, lock_key)
+    if not path.exists():
+        return {"held": False, "holder": None, "stale": False, "path": str(path)}
+    holder = _read_lock(path)
+    pid = int(holder.get("pid") or 0)
+    stale = bool(pid) and not _pid_alive(pid)
+    return {"held": True, "holder": holder, "stale": stale, "path": str(path)}

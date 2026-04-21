@@ -9,8 +9,11 @@ others are gitignored (ephemeral per-session runtime).
 
 | Subdir          | Tracked? | Lifetime          | Contents                                                         |
 |-----------------|----------|-------------------|------------------------------------------------------------------|
-| `state/`        | NO       | per-session       | Active mode state JSON (interview, ralplan, ralph, autopilot).   |
-|                 |          |                   | Atomically written by `omh_state`. Cleared on success.           |
+| `state/`        | NO       | per-session       | Active mode state JSON + `.lock` files (interview, ralplan,      |
+|                 |          |                   | ralph, autopilot, deep-research). Singleton form: `{mode}-state.json`. |
+|                 |          |                   | Per-instance form: `{mode}--{instance_id}.json` (concurrent runs |
+|                 |          |                   | of same mode keyed by topic/plan slug). Atomically written by    |
+|                 |          |                   | `omh_state`. Cleared on success.                                 |
 | `logs/`         | NO       | per-session       | Append-only event logs — decisions and transitions, not content. |
 | `progress/`     | NO       | per-session       | Ralph execution progress logs.                                   |
 | `specs/`        | YES      | durable           | Confirmed interview specs. Decision inputs.                      |
@@ -34,8 +37,14 @@ adds noise without value.
 - All paths are project-local. Never write to `~/.omh/` or any global
   location — `.omh/` lives next to the project it serves.
 - `omh_state` writes use the atomic tmp→fsync→replace pattern. Manual JSON
-  fallback (`json.dump` directly to `state/{mode}-state.json`) is acceptable
+  fallback (`json.dump` directly to `state/{mode}-state.json` for singleton
+  or `state/{mode}--{instance_id}.json` for per-instance) is acceptable
   when the plugin is unavailable, but use the tool when you can.
+- For modes that mutate shared artifacts (ralph, autopilot), prefer
+  per-instance state plus an advisory lock (`omh_state(action="lock", ...)`)
+  keyed on the plan slug. Locks live next to state files as `.lock` files
+  with `{pid, session_id, started_at}` payloads; stale locks (dead pid) are
+  auto-released on next acquire.
 - Specs use `status: confirmed` in YAML frontmatter as the cross-skill
   sentinel. Plans and research reports follow the same convention.
 - File naming is descriptive, not timestamped: `ralplan-{slug}-consensus.md`,

@@ -45,15 +45,17 @@ and file writes for state and spec output.
 
 Before starting a new interview:
 
-1. Check for active interview state:
+1. Enumerate active interviews:
    ```
-   state = omh_state(action="check", mode="interview")
+   listed = omh_state(action="list_instances", mode="interview")
    ```
-   If `omh_state` is not available, check `.omh/state/interview-*-state.json` manually.
-2. If found and active, tell the user: "There's an active interview for '{project_name}'. Resume or start fresh?"
-3. If resuming: `omh_state(action="read", mode="interview")` — read round summaries to reconstruct context
-4. If abandoning: `omh_state(action="write", mode="interview", data={...status: "abandoned"})`, proceed to Phase 1
+   Each entry carries `instance_id` (the interview id) and `active` flag.
+   If `omh_state` is unavailable, glob `.omh/state/interview--*.json` manually.
+2. If any active interview exists, tell the user: "There's an active interview for '{project_name}' (id={id}). Resume, start fresh, or abandon it?"
+3. If resuming: `omh_state(action="read", mode="interview", instance_id="{id}")` — read round summaries to reconstruct context
+4. If abandoning: `omh_state(action="write", mode="interview", instance_id="{id}", data={...status: "abandoned"})`, then proceed to Phase 1 with a NEW id
 5. If no active state found: proceed to Phase 1
+6. Concurrent interviews on different projects are permitted; do not block.
 6. **Check for existing research context (omh-deep-research sentinel):**
    if any `.omh/research/*-report.md` exists with frontmatter
    `status: confirmed`, mention it to the user as available context for
@@ -71,7 +73,7 @@ Start the interview with two questions:
 Then:
 - Generate an interview ID: `di-{YYYYMMDD}-{short_random}` (e.g., `di-20260407-x7k`)
 - Ask the user for a short project name (for filenames)
-- Create the state file at `.omh/state/interview-{id}.json` with:
+- Create the state file at `.omh/state/interview--{id}.json` (engine derives this from `instance_id="{id}"`) with:
   - All coverage dimensions set to `HIGH`
   - `type` set to `greenfield` or `brownfield` based on user's answer
   - `existing_context` coverage set to `N/A` for greenfield projects
@@ -123,7 +125,7 @@ the bin at its current level rather than prematurely lowering it.
 
 Update the interview state (increment round, add summary, update coverage):
 ```
-omh_state(action="write", mode="interview", data={...updated state with new round...})
+omh_state(action="write", mode="interview", instance_id="{id}", data={...updated state with new round...})
 ```
 Each round summary: max ~200 words — capture what was learned, not the full exchange.
 
@@ -222,12 +224,12 @@ Downstream skills detect completed interviews by checking for files matching
 
 ## State Management
 
-State file: `.omh/state/interview-{id}.json`
+State file: `.omh/state/interview--{id}.json` (engine path; pass `instance_id="{id}"` to `omh_state`)
 
 See `references/state-schema.md` for the full schema.
 
 Key rules:
-- Only ONE active interview at a time
+- Each interview is a separate instance keyed by its id; concurrent interviews on different projects are permitted
 - State stores round summaries (max ~200 words each), NOT full transcripts
 - State is preserved after completion (for audit trail)
 - Resumability is inherently lossy — round summaries help reconstruct context but lose nuance from the original conversation
@@ -237,7 +239,7 @@ Key rules:
 - **Never auto-terminate based on scores.** Coverage bins are advisory heuristics for question targeting. The user always decides when they're done.
 - **Don't store full transcripts.** Round summaries keep state compact and respect context window limits on resume. Accept that resumability is approximate, not exact.
 - **Ask about brownfield, don't auto-detect.** Checking for package.json etc. is unreliable and presumptuous. Let the user tell you.
-- **One active interview at a time.** If an active state exists, offer to resume or abandon it. Don't create parallel interview states.
+- **One active interview *per project*.** Use a fresh `instance_id` per interview. If an active interview already exists for the same project, offer to resume or abandon it before starting a parallel one with the same id.
 - **Spec must be confirmed.** Draft specs are not valid input for downstream skills. The user must explicitly confirm.
 - **Don't ask generic questions.** Reference the user's earlier answers. "What are your constraints?" is lazy. "You mentioned this is for personal use on Linux — are there other platforms it needs to work on?" is useful.
 - **Be conservative with coverage assessment.** When in doubt, keep the bin at its current level. It's better to ask one more question than to prematurely declare a dimension CLEAR.

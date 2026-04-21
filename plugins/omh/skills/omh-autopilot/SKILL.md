@@ -48,10 +48,49 @@ See `references/caller-examples.md` for how to drive the loop.
 
 ## Procedure
 
+### Step 0: Resolve Instance and Acquire Lock
+
+Autopilot drives a goal through spec → plan → ralph → QA → validation.
+Two autopilot sessions on the same goal would race on `autopilot`,
+`ralph`, and `ralph-tasks` state simultaneously. Use per-instance state
++ advisory lock.
+
+1. **Resolve `instance_id`** in this order:
+   - If a confirmed spec exists at `.omh/specs/{name}-spec.md`, use
+     `instance_id = "{name}"`.
+   - Else if a plan exists at `.omh/plans/ralplan-{slug}.md`, use
+     `instance_id = "{slug}"`.
+   - Else derive from the goal: `instance_id = kebab(goal)[:60]`.
+2. **Acquire the autopilot lock**:
+   ```
+   lock = omh_state(action="lock", mode="autopilot",
+                    lock_key="{instance_id}",
+                    session_id="{HERMES_SESSION_ID or uuid}",
+                    holder_note="autopilot driving {goal_or_plan}")
+   ```
+   On `acquired=false`, report `held_by`, offer wait/cancel/different
+   goal. Stale-pid auto-release applies.
+3. **Pass `instance_id` to every `omh_state` call** in this invocation
+   (autopilot, ralph, ralph-tasks).
+4. **When dispatching to ralph in Phase 2**, pass the same
+   `instance_id` in the delegation context so the ralph subagent
+   acquires `mode="ralph"` lock on the same slug.
+5. **Release the autopilot lock at every exit point** (paused,
+   blocked, complete, exception):
+   ```
+   omh_state(action="unlock", mode="autopilot",
+             lock_key="{instance_id}",
+             session_id="{HERMES_SESSION_ID or uuid}")
+   ```
+
+> **Singleton fallback (legacy).** Omitting `instance_id` writes
+> `.omh/state/autopilot-state.json` and skips locking. Acceptable only
+> when running one autopilot at a time.
+
 ### On Every Invocation: Dispatch
 
 ```
-state = omh_state(action="read", mode="autopilot")
+state = omh_state(action="read", mode="autopilot", instance_id="{instance_id}")
 ```
 
 - **Not found**: Fresh start → Smart Detection (below)
@@ -66,13 +105,13 @@ When no autopilot state exists, detect artifacts:
 
 1. Confirmed spec in `.omh/specs/*-spec.md` → create state at Phase 1
 2. Consensus plan in `.omh/plans/ralplan-*.md` → create state at Phase 2
-3. Ralph complete (`omh_state(action="check", mode="ralph")` → phase="complete") → create state at Phase 3
+3. Ralph complete (`omh_state(action="check", mode="ralph", instance_id="{instance_id}")` → phase="complete") → create state at Phase 3
 4. Nothing → create state at Phase 0
 
-Check for active ralph: `omh_state(action="check", mode="ralph")` → if active, warn about existing session.
+Check for active ralph: `omh_state(action="check", mode="ralph", instance_id="{instance_id}")` → if active, warn about existing session.
 
 ```
-omh_state(action="write", mode="autopilot", data={
+omh_state(action="write", mode="autopilot", instance_id="{instance_id}", data={
     "phase": "requirements", "goal": "...", "ralph_iteration": 0,
     "qa_cycle": 0, "max_qa_cycles": 5, "validation_round": 0,
     "max_validation_rounds": 3, "validation_verdicts": {},
@@ -112,7 +151,7 @@ Each invocation performs **exactly ONE ralph iteration**:
    ```
 2. After ralph completes its step, check ralph status:
    ```
-   ralph = omh_state(action="check", mode="ralph")
+   ralph = omh_state(action="check", mode="ralph", instance_id="{instance_id}")
    ```
    - `active=true` → increment `ralph_iteration`, exit (caller re-invokes)
    - `phase="complete"` → advance: `phase: "qa"`, `context_checkpoint: true`, exit
@@ -165,9 +204,9 @@ If `skip_validation: true` → advance to Phase 5, exit.
 1. Set `phase: "complete"` (safety — if interrupted, re-invocation retries cleanup)
 2. Delete state files:
    ```
-   omh_state(action="clear", mode="autopilot")
-   omh_state(action="clear", mode="ralph")
-   omh_state(action="clear", mode="ralph-tasks")
+   omh_state(action="clear", mode="autopilot", instance_id="{instance_id}")
+   omh_state(action="clear", mode="ralph", instance_id="{instance_id}")
+   omh_state(action="clear", mode="ralph-tasks", instance_id="{instance_id}")
    ```
 3. Preserve: `.omh/logs/`, `.omh/plans/`, `.omh/specs/`
 4. Report completion summary: goal, phases completed, ralph iterations, QA cycles, validation rounds
@@ -179,7 +218,7 @@ All state via `omh_state` tool. Atomic writes and staleness handled automaticall
 ## Sentinel Convention
 
 ```
-omh_state(action="check", mode="autopilot")
+omh_state(action="check", mode="autopilot", instance_id="{instance_id}")
 → {exists, active, phase, stale}
 ```
 

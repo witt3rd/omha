@@ -45,8 +45,10 @@ This skill fail-fasts if any of the following are missing:
   ```
   and exit before doing any work.
 - **`omh_state` tool** — preferred path. If absent, fall back to manual
-  JSON read/write at `.omh/state/research-state.json` (singleton). If
-  neither is writable, fail-fast with a clear error.
+  JSON read/write at `.omh/state/research--{slug}.json` (per-instance —
+  `{slug}` is the kebab+date+random4 minted in Phase 1; multiple research
+  topics can run concurrently). If neither is writable, fail-fast with a
+  clear error.
 - **Write access** to `.omh/` for state, plan, findings, report, log.
 
 Hermes discovery: `hermes skills list | grep omh-deep-research` should
@@ -72,11 +74,15 @@ Five invocation phases, exit-safe between any two:
 | 4 | synthesize| all findings (parent inlines)          | `{slug}-report.md` `status: draft`, phase=verify             | 1 `[omh-role:research-synthesist]` |
 | 5 | verify    | report + findings (parent inlines)     | confirmed frontmatter / state mutate / blocked               | 1 `[omh-role:research-verifier]` |
 
-**Singleton state.** State lives in `.omh/state/research-state.json`
-(singleton; one active research session per project — matches
-omh-deep-interview line 233). Per-session artifacts are slug-keyed under
-`.omh/research/`. The earlier `research-{id}.json` wording from the
-spec is superseded.
+**Per-instance state.** Each research session lives at
+`.omh/state/research--{slug}.json` (the engine slugifies `instance_id`
+into the filename). Multiple topics can be in flight concurrently — the
+slug minted in Phase 1 IS the instance_id, and every subsequent
+`omh_state(...)` call passes `instance_id="{slug}"`. Per-session
+artifacts (plan, findings, report) are slug-keyed under
+`.omh/research/`. The earlier `research-{id}.json` and
+`research-state.json` (singleton) wordings from older specs are
+superseded.
 
 **Parent owns the filesystem.** All web tool use happens inside delegated
 subagents. The parent reads findings files and inlines their contents
@@ -92,32 +98,35 @@ The full role bodies live in `plugins/omh/references/role-*.md`.
 
 Before starting any new research session:
 
-1. **Cancel check first** — `omh_state(action="cancel_check", mode="research")`.
-   If cancelled, log `CANCELLED` and exit cleanly with no further work.
-2. **Singleton check** — `omh_state(action="check", mode="research")`. If
-   `omh_state` is unavailable, read `.omh/state/research-state.json`
-   manually.
-3. **Sentinel self-heal (recovery from crash between confirm and
-   clear).** If active state exists AND its slug's
+1. **Mint a candidate slug** for the new request (see Phase 1 rule).
+   Call this `new_slug`. We need it to disambiguate enumeration below.
+2. **List existing research instances** —
+   `omh_state(action="list_instances", mode="research")`. If the tool is
+   unavailable, glob `.omh/state/research--*.json` manually. Each entry
+   carries an `instance_id` (== slug) and `active` flag.
+3. **For each active entry**, run a cancel check first:
+   `omh_state(action="cancel_check", mode="research", instance_id="{slug}")`.
+   If cancelled, log `CANCELLED slug={slug}` and clear that instance via
+   `omh_state(action="clear", mode="research", instance_id="{slug}")`.
+4. **Sentinel self-heal (recovery from crash between confirm and
+   clear).** For each remaining active entry whose
    `.omh/research/{slug}-report.md` has frontmatter `status: confirmed`,
    the previous run crashed after writing the sentinel but before
    clearing state. Treat as completed: log
-   `REPORT_CONFIRMED_RECOVERED slug={slug}`, clear state via
-   `omh_state(action="clear", mode="research")`, exit.
-4. **Active mismatched session** — if active state exists with a
-   different slug than the new request, prompt user:
-   resume the existing one / abandon and start fresh / cancel.
-5. **Already-confirmed for this topic** — if the user re-invokes for a
-   topic whose `{slug}-report.md` exists with `status: confirmed`,
-   prompt: refresh (mint a new slug and re-run) / view existing report /
-   cancel.
-6. **Resume mid-flight** — if active state exists for the same topic,
-   read `state.phase` and jump directly to that phase.
-7. **No active state** — proceed to Phase 1.
+   `REPORT_CONFIRMED_RECOVERED slug={slug}`, clear via
+   `omh_state(action="clear", mode="research", instance_id="{slug}")`.
+5. **Topic-match resume** — if any remaining active entry's `topic`
+   matches the new request, jump directly to Phase 2/3/4/5 for THAT
+   slug (use its existing `instance_id`); do not mint `new_slug`.
+6. **Already-confirmed for this topic** — if a `{slug}-report.md`
+   exists with `status: confirmed` matching the new topic, prompt:
+   refresh (mint a new slug and re-run) / view existing report / cancel.
+7. **No conflict** — proceed to Phase 1 with `new_slug`. Concurrent
+   active research on different topics is permitted; do not block.
 
 ### Phase 1: Decompose
 
-1. Cancel check: `omh_state(action="cancel_check", mode="research")`.
+1. Cancel check: `omh_state(action="cancel_check", mode="research", instance_id="{slug}")`.
 2. **Mint a slug** — concrete rule:
    `slug = kebab(topic)[:40] + '-' + YYYYMMDD + '-' + random4`
    where `random4` is 4 lowercase-hex chars.
@@ -138,7 +147,7 @@ Before starting any new research session:
      - ...
    ---
    ```
-5. **Initialize state** via `omh_state(action="write", mode="research", data={...})`:
+5. **Initialize state** via `omh_state(action="write", mode="research", instance_id="{slug}", data={...})`:
    ```
    {
      "phase": "search",
@@ -160,7 +169,7 @@ This phase is **re-entrant**: it dispatches one batch of up to 3
 researcher subagents per invocation, then exits. Re-invoke to dispatch
 the next batch. Re-entry is driven by `state.completed_subtopics`.
 
-1. Cancel check: `omh_state(action="cancel_check", mode="research")`.
+1. Cancel check: `omh_state(action="cancel_check", mode="research", instance_id="{slug}")`.
 2. Read state and the `{slug}-plan.md` frontmatter.
 3. Compute `pending = [s for s in plan.subtopics if s.name not in state.completed_subtopics]`.
 4. Take the next `batch = pending[:3]` (up to 3 in parallel).
@@ -184,7 +193,7 @@ the next batch. Re-entry is driven by `state.completed_subtopics`.
       frontmatter capturing `subtopic`, `source_urls`, and credibility
       tags pulled from the subagent's returned SOURCES block.
    2. Update `state.completed_subtopics` (extend the list, persist via
-      `omh_state(action="write", mode="research", data=...)`).
+      `omh_state(action="write", mode="research", instance_id="{slug}", data=...)`).
    3. Exit.
 7. **Phase transition.** On the next invocation, Phase 0 routes back
    here. If `pending` becomes empty after the write, set
@@ -208,7 +217,7 @@ the next batch. Re-entry is driven by `state.completed_subtopics`.
 The parent skill never calls `web_search` or `web_extract` directly;
 all web tool use happens inside delegated subagents.
 
-1. Cancel check: `omh_state(action="cancel_check", mode="research")`.
+1. Cancel check: `omh_state(action="cancel_check", mode="research", instance_id="{slug}")`.
 2. Read all `.omh/research/{slug}-findings/*.md` files. From each, extract
    the `GAPS:` bullet list. Concatenate, then **dedup lexically**
    (case-insensitive trim-compare; preserve first occurrence).
@@ -228,11 +237,25 @@ all web tool use happens inside delegated subagents.
 
 ### Phase 4: Synthesize (parent inlines findings; parent writes report)
 
-1. Cancel check: `omh_state(action="cancel_check", mode="research")`.
+1. Cancel check: `omh_state(action="cancel_check", mode="research", instance_id="{slug}")`.
 2. **Parent INLINES findings.** Read ALL files under
    `.omh/research/{slug}-findings/` (including `_followup.md` if
    present). Concatenate their full contents into the delegation's
    `context` field. The synthesist subagent has no filesystem access.
+
+   **Budget escape (verified safe).** If the concatenated payload
+   exceeds the orchestrator's tool-arg budget (≈40KB+ across 5+
+   findings files is a soft threshold), the parent MAY summarize
+   each findings file's SYNTHESIS section while preserving:
+     - The full SOURCES `[N]` block verbatim (titles + URLs + tags + dates)
+     - All GAPS sections verbatim
+     - The `_followup` block verbatim (it is usually the smallest and
+       most claim-dense)
+   Do NOT drop or paraphrase any URL, citation tag, or numeric claim.
+   Dogfooded 2026-04: a 5-subtopic + 1-followup run with summarized
+   SYNTHESIS bodies + verbatim source lists passed verification at
+   high confidence with all 28 globally-renumbered citations intact.
+   When in doubt, prefer full inline; summarize only when forced.
 3. Dispatch ONE `[omh-role:research-synthesist]` task:
    ```
    delegate_task(
@@ -256,7 +279,7 @@ all web tool use happens inside delegated subagents.
 
 ### Phase 5: Verify (parent inlines; 3-strike gate; ordered confirm)
 
-1. Cancel check: `omh_state(action="cancel_check", mode="research")`.
+1. Cancel check: `omh_state(action="cancel_check", mode="research", instance_id="{slug}")`.
 2. **Parent INLINES report + findings.** Read `{slug}-report.md` AND
    all `{slug}-findings/*.md` files. Concatenate BOTH into the
    verifier delegation's `context` field. Verifier subagent has no
@@ -272,7 +295,7 @@ all web tool use happens inside delegated subagents.
 5. **On VERDICT: PASS — STRICT ORDER (NEVER reverse):**
    1. Write `{slug}-report.md` with frontmatter `status: confirmed` (atomic; idempotent sentinel; THIS is the source-of-truth and must land FIRST).
    2. Append `REPORT_CONFIRMED slug={slug}` to the event log.
-   3. Clear state via `omh_state(action="clear", mode="research")`.
+   3. Clear state via `omh_state(action="clear", mode="research", instance_id="{slug}")`.
    4. Print summary to user; exit.
 
    Phase 0 self-heals if a crash occurs between step 1 and step 3 (it

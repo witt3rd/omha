@@ -629,3 +629,232 @@ def test_check_cancel_bad_timestamp():
     result = state_check_cancel("ralph")
     # Bad timestamp means expiry check is skipped (except block passes) → signal treated as active
     assert result["cancelled"] is True
+
+
+# ===========================================================================
+# Per-instance state files (instance_id parameter)
+# ===========================================================================
+
+from plugins.omh.omh_state import (
+    state_list_instances,
+    state_lock_acquire,
+    state_lock_check,
+    state_lock_release,
+    _slugify_instance,
+)
+
+
+def test_instance_id_writes_distinct_file():
+    state_write("deep-research", {"active": True, "topic": "A"}, instance_id="topic-a")
+    state_write("deep-research", {"active": True, "topic": "B"}, instance_id="topic-b")
+    p_a = Path(".omh/state/deep-research--topic-a.json")
+    p_b = Path(".omh/state/deep-research--topic-b.json")
+    assert p_a.exists() and p_b.exists()
+
+
+def test_instance_id_isolation():
+    state_write("ralph", {"active": True, "phase": "X", "iteration": 1}, instance_id="plan-one")
+    state_write("ralph", {"active": True, "phase": "Y", "iteration": 9}, instance_id="plan-two")
+    a = state_read("ralph", instance_id="plan-one")
+    b = state_read("ralph", instance_id="plan-two")
+    assert a["data"]["phase"] == "X"
+    assert b["data"]["phase"] == "Y"
+
+
+def test_singleton_and_instance_coexist():
+    state_write("ralph", {"active": True, "phase": "singleton"})
+    state_write("ralph", {"active": True, "phase": "scoped"}, instance_id="myplan")
+    assert Path(".omh/state/ralph-state.json").exists()
+    assert Path(".omh/state/ralph--myplan.json").exists()
+    assert state_read("ralph")["data"]["phase"] == "singleton"
+    assert state_read("ralph", "myplan")["data"]["phase"] == "scoped"
+
+
+def test_instance_id_slugification():
+    state_write("ralph", {"active": True}, instance_id="My Plan / v2!!")
+    expected = Path(".omh/state/ralph--my-plan-v2.json")
+    assert expected.exists()
+
+
+def test_instance_id_double_dash_separator_disambiguates_hyphenated_modes():
+    """deep-research--myslug must parse as (deep-research, myslug), not (deep, research-myslug)."""
+    state_write("deep-research", {"active": True, "phase": "search"}, instance_id="myslug")
+    state_write("deep-interview", {"active": True, "phase": "ask"}, instance_id="myslug")
+    listed = state_list_active()["modes"]
+    by_mode = {(m["mode"], m.get("instance_id")) for m in listed}
+    assert ("deep-research", "myslug") in by_mode
+    assert ("deep-interview", "myslug") in by_mode
+
+
+def test_list_active_includes_instances_with_singleton():
+    state_write("ralph", {"active": True})
+    state_write("ralph", {"active": True}, instance_id="alpha")
+    state_write("ralph", {"active": True}, instance_id="beta")
+    listed = state_list_active()["modes"]
+    keys = {(m["mode"], m.get("instance_id")) for m in listed}
+    assert ("ralph", None) in keys
+    assert ("ralph", "alpha") in keys
+    assert ("ralph", "beta") in keys
+
+
+def test_list_instances_returns_all_for_one_mode():
+    state_write("ralph", {"active": True})
+    state_write("ralph", {"active": False}, instance_id="done")
+    state_write("ralph", {"active": True}, instance_id="running")
+    state_write("autopilot", {"active": True}, instance_id="ignored")
+    result = state_list_instances("ralph")
+    assert result["mode"] == "ralph"
+    ids = {item["instance_id"] for item in result["instances"]}
+    assert ids == {None, "done", "running"}
+
+
+def test_clear_per_instance_does_not_affect_singleton():
+    state_write("ralph", {"active": True, "phase": "keep"})
+    state_write("ralph", {"active": True, "phase": "discard"}, instance_id="x")
+    state_clear("ralph", instance_id="x")
+    assert not Path(".omh/state/ralph--x.json").exists()
+    assert Path(".omh/state/ralph-state.json").exists()
+    assert state_read("ralph")["data"]["phase"] == "keep"
+
+
+def test_cancel_per_instance():
+    state_write("deep-research", {"active": True}, instance_id="topic-a")
+    state_write("deep-research", {"active": True}, instance_id="topic-b")
+    state_cancel("deep-research", reason="user said stop", instance_id="topic-a")
+    a = state_check_cancel("deep-research", instance_id="topic-a")
+    b = state_check_cancel("deep-research", instance_id="topic-b")
+    assert a["cancelled"] is True
+    assert b["cancelled"] is False
+
+
+def test_slugify_rejects_empty_and_huge_inputs():
+    with pytest.raises(ValueError):
+        _slugify_instance("")
+    with pytest.raises(ValueError):
+        _slugify_instance("!!!")
+    with pytest.raises(ValueError):
+        _slugify_instance("x" * 1000)
+
+
+# ===========================================================================
+# Advisory locks
+# ===========================================================================
+
+
+def test_lock_acquire_then_release():
+    r = state_lock_acquire("ralph", "plan-1", session_id="sess-A")
+    assert r["acquired"] is True
+    assert Path(r["path"]).exists()
+    rel = state_lock_release("ralph", "plan-1", session_id="sess-A")
+    assert rel["released"] is True
+    assert not Path(r["path"]).exists()
+
+
+def test_lock_blocks_second_acquirer():
+    state_lock_acquire("ralph", "plan-X", session_id="sess-A")
+    second = state_lock_acquire("ralph", "plan-X", session_id="sess-B")
+    assert second["acquired"] is False
+    assert second["held_by"]["session_id"] == "sess-A"
+
+
+def test_lock_check_inspect_only():
+    state_lock_acquire("ralph", "plan-Y", session_id="sess-A")
+    info = state_lock_check("ralph", "plan-Y")
+    assert info["held"] is True
+    assert info["holder"]["session_id"] == "sess-A"
+    # Check is non-mutating
+    info2 = state_lock_check("ralph", "plan-Y")
+    assert info2["held"] is True
+
+
+def test_lock_release_session_mismatch_blocked():
+    state_lock_acquire("ralph", "plan-Z", session_id="sess-A")
+    rel = state_lock_release("ralph", "plan-Z", session_id="sess-other")
+    assert rel["released"] is False
+
+
+def test_lock_release_force_overrides():
+    state_lock_acquire("ralph", "plan-W", session_id="sess-A")
+    rel = state_lock_release("ralph", "plan-W", session_id="sess-other", force=True)
+    assert rel["released"] is True
+
+
+def test_lock_stale_pid_auto_released(monkeypatch):
+    import plugins.omh.omh_state as mod
+    # Acquire as a fake dead pid
+    monkeypatch.setattr(mod, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(mod.os, "getpid", lambda: 999999)
+    state_lock_acquire("ralph", "plan-stale", session_id="sess-old")
+    # Now pretend a new process tries to acquire — pid_alive still false → stale, replaced
+    monkeypatch.setattr(mod.os, "getpid", lambda: 123)
+    r = state_lock_acquire("ralph", "plan-stale", session_id="sess-new")
+    assert r["acquired"] is True
+    assert r["holder"]["session_id"] == "sess-new"
+
+
+def test_lock_release_when_missing_is_idempotent():
+    rel = state_lock_release("ralph", "never-locked", session_id="sess-A")
+    assert rel["released"] is True
+    assert rel["existed"] is False
+
+
+# ===========================================================================
+# Tool dispatch — per-instance and lock actions
+# ===========================================================================
+
+
+def test_handler_write_with_instance_id():
+    out = json.loads(omh_state_handler({
+        "action": "write", "mode": "deep-research",
+        "instance_id": "abc", "data": {"active": True, "topic": "T"},
+    }))
+    assert out["success"] is True
+    assert Path(".omh/state/deep-research--abc.json").exists()
+
+
+def test_handler_lock_unlock_roundtrip():
+    acq = json.loads(omh_state_handler({
+        "action": "lock", "mode": "ralph",
+        "lock_key": "plan-tool", "session_id": "tool-sess",
+    }))
+    assert acq["acquired"] is True
+    contend = json.loads(omh_state_handler({
+        "action": "lock", "mode": "ralph",
+        "lock_key": "plan-tool", "session_id": "other-sess",
+    }))
+    assert contend["acquired"] is False
+    assert contend["held_by"]["session_id"] == "tool-sess"
+    rel = json.loads(omh_state_handler({
+        "action": "unlock", "mode": "ralph",
+        "lock_key": "plan-tool", "session_id": "tool-sess",
+    }))
+    assert rel["released"] is True
+
+
+def test_handler_lock_check_does_not_mutate():
+    omh_state_handler({
+        "action": "lock", "mode": "ralph",
+        "lock_key": "plan-tc", "session_id": "tc-sess",
+    })
+    out1 = json.loads(omh_state_handler({
+        "action": "lock_check", "mode": "ralph", "lock_key": "plan-tc",
+    }))
+    out2 = json.loads(omh_state_handler({
+        "action": "lock_check", "mode": "ralph", "lock_key": "plan-tc",
+    }))
+    assert out1["held"] is True and out2["held"] is True
+
+
+def test_handler_lock_requires_lock_key():
+    out = json.loads(omh_state_handler({"action": "lock", "mode": "ralph"}))
+    assert "error" in out
+
+
+def test_handler_list_instances():
+    omh_state_handler({"action": "write", "mode": "ralph",
+                       "instance_id": "p1", "data": {"active": True}})
+    omh_state_handler({"action": "write", "mode": "ralph",
+                       "instance_id": "p2", "data": {"active": True}})
+    out = json.loads(omh_state_handler({"action": "list_instances", "mode": "ralph"}))
+    ids = {i["instance_id"] for i in out["instances"]}
+    assert ids == {"p1", "p2"}

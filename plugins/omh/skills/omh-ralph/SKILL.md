@@ -46,10 +46,49 @@ Final invocation: all tasks pass → architect review → mark complete → EXIT
 
 ## Procedure
 
+### Step 0: Resolve Instance and Acquire Lock
+
+Ralph and autopilot mutate a shared `.omh/plans/` plan. Two sessions
+running ralph against the same plan would race on `ralph-tasks` state
+and produce non-deterministic outcomes. Use per-instance state +
+advisory lock to make concurrent plans safe.
+
+1. **Resolve `instance_id`** from the plan path:
+   - Default plan source: `.omh/plans/ralplan-*.md` or `.omh/plans/ralph-plan.md`.
+   - `instance_id = basename(plan_path) without ".md"` (engine slugifies).
+   - If no plan exists yet (Step 2 will choose), use `instance_id="default"`.
+2. **Acquire the lock** before reading/writing state:
+   ```
+   lock = omh_state(action="lock", mode="ralph",
+                    lock_key="{instance_id}",
+                    session_id="{HERMES_SESSION_ID or uuid}",
+                    holder_note="ralph executing {plan_path}")
+   ```
+   - `acquired=true`: continue.
+   - `acquired=false`: report `held_by` to the user (pid + session_id +
+     started_at). Offer: wait / cancel the holder
+     (`omh_state(action="cancel", mode="ralph", instance_id="{instance_id}")`,
+     then on next invocation the dead holder's lock will be released
+     automatically by stale-pid detection) / pick a different plan.
+3. **Pass `instance_id` to every subsequent `omh_state` call in this
+   invocation** — both the `ralph` mode and the `ralph-tasks` mode.
+4. **Release the lock at every exit point** (success, blocked, cancel,
+   max-iterations, exception):
+   ```
+   omh_state(action="unlock", mode="ralph",
+             lock_key="{instance_id}",
+             session_id="{HERMES_SESSION_ID or uuid}")
+   ```
+   Wrap the body of the procedure so the unlock fires even on error.
+
+> **Singleton fallback (legacy).** If a caller omits `instance_id`,
+> the engine writes the legacy `.omh/state/ralph-state.json` and skips
+> locking. Only use this for one-plan-at-a-time setups.
+
 ### Step 1: Read State
 
 ```
-state = omh_state(action="read", mode="ralph")
+state = omh_state(action="read", mode="ralph", instance_id="{instance_id}")
 ```
 
 - **`state.exists=false`**: Fresh start — go to Step 2 (Planning Gate).
@@ -60,7 +99,7 @@ state = omh_state(action="read", mode="ralph")
 
 Check for cancel signal:
 ```
-cancel = omh_state(action="cancel_check", mode="ralph")
+cancel = omh_state(action="cancel_check", mode="ralph", instance_id="{instance_id}")
 ```
 If `cancel.cancelled=true`: set phase="cancelled", write state, exit.
 
@@ -73,8 +112,8 @@ write `phase="blocked"`, report "Max iterations reached", exit.
 
 Ralph MUST NOT execute without a plan. Check sources in order:
 
-1. `omh_state(action="check", mode="ralph-tasks")` → `exists=true` — already parsed, skip to Step 3
-2. `.omh/plans/ralplan-*.md` — parse into ralph-tasks state: `omh_state(action="write", mode="ralph-tasks", data={...})`
+1. `omh_state(action="check", mode="ralph-tasks", instance_id="{instance_id}")` → `exists=true` — already parsed, skip to Step 3
+2. `.omh/plans/ralplan-*.md` — parse into ralph-tasks state: `omh_state(action="write", mode="ralph-tasks", instance_id="{instance_id}", data={...})`
 3. `.omh/plans/ralph-plan.md` — parse into ralph-tasks state
 4. Nothing found → tell user: "No plan found. Run `omh-ralplan` first."
 
@@ -87,7 +126,7 @@ Ralph MUST NOT execute without a plan. Check sources in order:
 
 Write initial state:
 ```
-omh_state(action="write", mode="ralph", data={
+omh_state(action="write", mode="ralph", instance_id="{instance_id}", data={
   "active": true, "phase": "execute", "iteration": 0,
   "session_id": "<uuid>", "max_iterations": 100,
   "task_prompt": "<original user request>",
@@ -104,7 +143,7 @@ omh_state(action="write", mode="ralph", data={
 
 Read task list:
 ```
-tasks = omh_state(action="read", mode="ralph-tasks")
+tasks = omh_state(action="read", mode="ralph-tasks", instance_id="{instance_id}")
 ```
 
 1. If ALL tasks have `passes: true` → go to Step 7 (Final Review)
@@ -173,7 +212,7 @@ If ALL remaining tasks are blocked: write `phase="blocked"`, report, exit.
 
 **Cancel detection** (if user says "stop", "cancel", "abort"):
 ```
-omh_state(action="cancel", mode="ralph", reason="user request")
+omh_state(action="cancel", mode="ralph", instance_id="{instance_id}", reason="user request")
 ```
 Then write `phase="cancelled"` to state, exit with resume instructions.
 
@@ -197,7 +236,7 @@ delegate_task(
 
 After every action:
 ```
-omh_state(action="write", mode="ralph", data={...updated state...})
+omh_state(action="write", mode="ralph", instance_id="{instance_id}", data={...updated state...})
 ```
 
 Exit cleanly. The caller re-invokes for the next iteration.
@@ -215,6 +254,6 @@ Exit cleanly. The caller re-invokes for the next iteration.
 ## Sentinel Convention
 
 Other skills detect ralph status:
-- `omh_state(action="check", mode="ralph")` → `{exists, active, phase, stale}`
+- `omh_state(action="check", mode="ralph", instance_id="{instance_id}")` → `{exists, active, phase, stale}`
 - `phase="complete"` → ralph finished successfully
 - `phase="blocked"` → ralph needs intervention
