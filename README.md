@@ -37,7 +37,8 @@ For the optional plugin: install `plugins/omh/` to `~/.hermes/plugins/omh/`
 
 OMH self-seeds a `.omh/` directory in the project on first use (with the
 plugin installed) — including a README explaining the convention and a
-`.gitignore` pre-configured for selective sharing. No separate init step.
+`.gitignore` pre-configured for selective sharing. To scaffold up-front
+without running a workflow, call `omh_state(action="init")`.
 
 ## Requirements
 

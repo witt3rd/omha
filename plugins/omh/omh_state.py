@@ -62,6 +62,26 @@ def _state_dir() -> Path:
     return p
 
 
+def state_init() -> dict:
+    """Explicitly create .omh/ in cwd and seed README.md + .gitignore.
+
+    Idempotent — safe to run on an existing .omh/ directory; never overwrites
+    user edits to seeded files. Reports which files were newly created.
+    """
+    seed_targets = ["README.md", ".gitignore"]
+    omh_dir = Path(".omh")
+    pre_existing = {name: (omh_dir / name).exists() for name in seed_targets}
+    sd = _state_dir()  # triggers mkdir + seed
+    seeded = [name for name in seed_targets if not pre_existing[name] and (omh_dir / name).exists()]
+    return {
+        "success": True,
+        "omh_dir": str(omh_dir.resolve()),
+        "state_dir": str(sd.resolve()),
+        "seeded": seeded,
+        "already_present": [name for name in seed_targets if pre_existing[name]],
+    }
+
+
 _MODE_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 

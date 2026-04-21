@@ -1,7 +1,7 @@
 """
 omh_state tool — unified state management for OMH workflow modes.
 
-Actions: read | write | clear | check | list | cancel | cancel_check | load_role
+Actions: init | read | write | clear | check | list | cancel | cancel_check | load_role
 """
 
 import json
@@ -11,6 +11,7 @@ from ..omh_state import (
     state_check,
     state_check_cancel,
     state_clear,
+    state_init,
     state_list_active,
     state_read,
     state_write,
@@ -20,6 +21,7 @@ OMH_STATE_SCHEMA = {
     "name": "omh_state",
     "description": (
         "Manage OMH workflow state. Actions: "
+        "init (scaffold .omh/ in cwd: create directory, seed README.md + .gitignore, idempotent), "
         "read (get current state), "
         "write (save state data), "
         "clear (delete state file), "
@@ -35,7 +37,7 @@ OMH_STATE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["read", "write", "clear", "check", "list", "cancel", "cancel_check", "load_role"],
+                "enum": ["init", "read", "write", "clear", "check", "list", "cancel", "cancel_check", "load_role"],
                 "description": "Operation to perform",
             },
             "mode": {
@@ -76,6 +78,9 @@ def omh_state_handler(args: dict, **kwargs) -> str:
 
     if action == "list":
         return json.dumps(state_list_active())
+
+    if action == "init":
+        return json.dumps(state_init())
 
     if action == "load_role":
         role = args.get("role", "").strip()

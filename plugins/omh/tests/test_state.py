@@ -71,6 +71,38 @@ def test_seed_does_not_overwrite_user_edits():
     assert Path(".omh/README.md").read_text() == custom
 
 
+def test_init_scaffolds_fresh_dot_omh():
+    """state_init on a clean cwd creates .omh/, seeds README + .gitignore, reports both."""
+    from plugins.omh.omh_state import state_init
+    result = state_init()
+    assert result["success"] is True
+    assert Path(".omh").is_dir()
+    assert Path(".omh/README.md").exists()
+    assert Path(".omh/.gitignore").exists()
+    assert sorted(result["seeded"]) == [".gitignore", "README.md"]
+    assert result["already_present"] == []
+
+
+def test_init_is_idempotent_and_reports_already_present():
+    """Running init twice doesn't re-seed; second run reports files as already present."""
+    from plugins.omh.omh_state import state_init
+    state_init()
+    custom = "# user-edited\n"
+    Path(".omh/README.md").write_text(custom)
+    result = state_init()
+    assert result["seeded"] == []
+    assert sorted(result["already_present"]) == [".gitignore", "README.md"]
+    assert Path(".omh/README.md").read_text() == custom
+
+
+def test_init_via_handler_returns_json():
+    """The omh_state tool routes action=init correctly."""
+    result = json.loads(omh_state_handler({"action": "init"}))
+    assert result["success"] is True
+    assert "omh_dir" in result
+    assert "seeded" in result
+
+
 def test_read_returns_data_without_meta():
     state_write("ralph", {"active": True, "phase": "execute"})
     result = state_read("ralph")
