@@ -13,7 +13,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plugins.omh.omh_delegate import omh_delegate, _discover_project_root
+from plugins.omh.omh_delegate import (
+    omh_delegate,
+    omh_delegate_prepare,
+    omh_delegate_finalize,
+    _discover_project_root,
+)
 
 
 @pytest.fixture
@@ -278,3 +283,130 @@ def test_breadcrumbs_are_append_only_separate_files(project):
     assert "completed_at" not in d
     assert "file_present" not in d
     assert d["_meta"]["kind"] == "dispatch"
+
+
+# ---------------------------------------------------------------------------
+# Test 7: prepare/finalize split — primary API for agent loops (Bug D1 fix)
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_returns_augmented_goal_and_writes_dispatched_breadcrumb(project):
+    """prepare() must inject the contract, write the dispatched breadcrumb,
+    and return everything the agent needs to perform the dispatch itself."""
+    prep = omh_delegate_prepare(
+        role="planner", goal="Plan stuff.", mode="ralplan",
+        phase="round1-planner", round=1, context="ctx-data",
+    )
+
+    # Required keys for the agent to dispatch
+    for key in ("id", "expected_path", "augmented_goal", "context",
+                "breadcrumb_dir", "project_root", "mode", "phase",
+                "round", "slug", "role"):
+        assert key in prep, f"missing prepare() result key: {key}"
+
+    # Contract block was injected
+    assert "<<<EXPECTED_OUTPUT_PATH>>>" in prep["augmented_goal"]
+    assert prep["expected_path"] in prep["augmented_goal"]
+    assert prep["augmented_goal"].startswith("Plan stuff.")  # original preserved
+
+    # Dispatched breadcrumb written; no completion yet
+    bdir = project / ".omh" / "state" / "dispatched"
+    dispatched = list(bdir.glob("*.dispatched.json"))
+    completed = list(bdir.glob("*.completed.json"))
+    assert len(dispatched) == 1
+    assert len(completed) == 0  # finalize hasn't been called yet
+
+    d = json.loads(dispatched[0].read_text())
+    assert d["id"] == prep["id"]
+    assert d["context_bytes"] == len(b"ctx-data")
+
+
+def test_finalize_happy_path(project):
+    """finalize() with file present + raw_return matching path = ok=True."""
+    prep = omh_delegate_prepare(
+        role="planner", goal="g", mode="ralplan", phase="p",
+    )
+    # Simulate the subagent obeying the contract
+    Path(prep["expected_path"]).write_text("# artifact\n", encoding="utf-8")
+
+    res = omh_delegate_finalize(prep=prep, raw_return=prep["expected_path"])
+    assert res["ok"] is True
+    assert res["ok_strict"] is True
+    assert res["file_present"] is True
+    assert res["contract_satisfied"] is True
+    assert res["recovered_by_wrapper"] is False
+    assert res["path"] == prep["expected_path"]
+    assert res["id"] == prep["id"]
+
+
+def test_finalize_contract_violation_no_file(project, capsys):
+    """finalize() with no file present = ok=False + stderr warning."""
+    prep = omh_delegate_prepare(
+        role="planner", goal="g", mode="ralplan", phase="p",
+    )
+    # Subagent ignored contract — no file written
+    res = omh_delegate_finalize(
+        prep=prep,
+        raw_return="Sure, here's some prose instead of a path.",
+    )
+    assert res["ok"] is False
+    assert res["ok_strict"] is False
+    assert res["file_present"] is False
+    assert res["contract_satisfied"] is False
+
+    captured = capsys.readouterr()
+    assert "omh_delegate[contract_violation]" in captured.err
+
+
+def test_finalize_with_error_propagates_to_breadcrumb(project, capsys):
+    """When the agent's dispatch raised, pass error= and finalize records it
+    on the completion breadcrumb (does NOT re-raise — agent owns that)."""
+    prep = omh_delegate_prepare(
+        role="planner", goal="g", mode="ralplan", phase="p",
+    )
+    res = omh_delegate_finalize(
+        prep=prep,
+        raw_return=None,
+        error="RuntimeError: simulated dispatch failure",
+    )
+    assert res["ok"] is False
+    assert res["file_present"] is False
+
+    bdir = project / ".omh" / "state" / "dispatched"
+    completed = json.loads(next(bdir.glob("*.completed.json")).read_text())
+    assert completed["error"] == "RuntimeError: simulated dispatch failure"
+
+    captured = capsys.readouterr()
+    assert "omh_delegate[exception]" in captured.err
+
+
+def test_omh_delegate_requires_explicit_delegate_fn():
+    """The convenience orchestrator must reject delegate_fn=None loudly,
+    NOT fall through to a broken default import (Bug D1 regression guard)."""
+    with pytest.raises(TypeError, match="explicit delegate_fn"):
+        omh_delegate(
+            role="planner", goal="g", mode="ralplan", phase="p",
+            delegate_fn=None,
+        )
+
+
+def test_omh_delegate_orchestrator_calls_prepare_and_finalize(project):
+    """The convenience orchestrator must produce the same end-state as
+    explicit prepare/finalize: one dispatched + one completed breadcrumb,
+    artifact at the expected path, structured result returned."""
+    def fake_delegate(*, goal, context="", **kwargs):
+        marker = "<<<EXPECTED_OUTPUT_PATH>>>"
+        end = "<<<END_EXPECTED_OUTPUT_PATH>>>"
+        path_str = goal.split(marker, 1)[1].split(end, 1)[0].strip()
+        Path(path_str).write_text("orch", encoding="utf-8")
+        return path_str
+
+    res = omh_delegate(
+        role="planner", goal="g", mode="ralplan", phase="p",
+        delegate_fn=fake_delegate,
+    )
+    assert res["ok"] is True
+
+    bdir = project / ".omh" / "state" / "dispatched"
+    assert len(list(bdir.glob("*.dispatched.json"))) == 1
+    assert len(list(bdir.glob("*.completed.json"))) == 1
