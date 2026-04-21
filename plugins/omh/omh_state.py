@@ -1,7 +1,10 @@
 """
 OMH State Engine — atomic read/write/cancel for .omh/state/{mode}-state.json.
 
-All state files live under state_dir (default: .omh/state) relative to cwd.
+All state files live under state_dir (default: .omh/state). Relative paths are
+anchored against config["project_root"] if set, else against cwd at call time;
+the result is always resolved to an absolute path so later cwd drift cannot
+redirect writes.
 Writes are atomic (write to .tmp.{uuid} → fsync → os.replace).
 Every write wraps data in a _meta envelope: {written_at, mode, schema_version}.
 Cancel is implemented as cancel_requested/cancel_reason/cancel_at fields
@@ -55,8 +58,24 @@ def _seed_dot_omh(omh_dir: Path) -> None:
 
 
 def _state_dir() -> Path:
+    """Resolve the OMH state directory to an absolute path.
+
+    Resolution order (mirrors evidence_tool.py):
+      1. config["state_dir"] (defaults to ".omh/state").
+      2. If relative, anchor against config["project_root"] if set,
+         else against Path.cwd() at call time.
+      3. Resolve to absolute so subsequent cwd drift cannot redirect writes.
+
+    This prevents Bug 2 (state silently landing in ~/.omh/state/ when Hermes
+    was started from $HOME, or wherever the agent's cwd happens to be).
+    """
     config = get_config()
     p = Path(config.get("state_dir", ".omh/state"))
+    if not p.is_absolute():
+        project_root_cfg = config.get("project_root")
+        base = Path(project_root_cfg).resolve() if project_root_cfg else Path.cwd().resolve()
+        p = base / p
+    p = p.resolve()
     p.mkdir(parents=True, exist_ok=True)
     _seed_dot_omh(p.parent)
     return p

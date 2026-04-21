@@ -62,6 +62,87 @@ def test_state_dir_creation_seeds_dot_omh_readme_and_gitignore():
     assert "state/" in gitignore.read_text()
 
 
+# ---------------------------------------------------------------------------
+# Bug 2 — state_dir resolves to project_root, not transient cwd
+# ---------------------------------------------------------------------------
+
+def test_state_dir_uses_project_root_not_cwd(tmp_path, monkeypatch):
+    """Relative state_dir must anchor to project_root config, not cwd-at-call.
+
+    Reproduces Bug 2 from omh-self-flakiness.md: when project_root is set but
+    the agent's cwd has drifted elsewhere, state must still land in the
+    project's .omh/state/ directory.
+    """
+    project_root = tmp_path / "myproject"
+    project_root.mkdir()
+    elsewhere = tmp_path / "other"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    omh_config_module._config_cache = {
+        "state_dir": ".omh/state",
+        "project_root": str(project_root),
+        "staleness_hours": 2,
+        "cancel_ttl_seconds": 30,
+        "evidence": {},
+    }
+    state_write(mode="ralph", data={"x": 1})
+    assert (project_root / ".omh" / "state" / "ralph-state.json").exists()
+    assert not (elsewhere / ".omh" / "state" / "ralph-state.json").exists()
+
+
+def test_state_dir_falls_back_to_cwd_when_project_root_unset(tmp_path, monkeypatch):
+    """Without project_root, relative state_dir resolves against cwd-at-call."""
+    monkeypatch.chdir(tmp_path)
+    omh_config_module._config_cache = {
+        "state_dir": ".omh/state",
+        "staleness_hours": 2,
+        "cancel_ttl_seconds": 30,
+        "evidence": {},
+    }
+    state_write(mode="ralph", data={"x": 1})
+    assert (tmp_path / ".omh" / "state" / "ralph-state.json").exists()
+
+
+def test_state_dir_absolute_path_used_as_is(tmp_path, monkeypatch):
+    """Absolute state_dir must be honored verbatim, ignoring project_root."""
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    abs_state = tmp_path / "external-state"
+    monkeypatch.chdir(tmp_path)
+    omh_config_module._config_cache = {
+        "state_dir": str(abs_state),
+        "project_root": str(project_root),
+        "staleness_hours": 2,
+        "cancel_ttl_seconds": 30,
+        "evidence": {},
+    }
+    state_write(mode="ralph", data={"x": 1})
+    assert (abs_state / "ralph-state.json").exists()
+    assert not (project_root / ".omh" / "state" / "ralph-state.json").exists()
+
+
+def test_state_dir_immune_to_cwd_drift_after_first_call(tmp_path, monkeypatch):
+    """Once resolved, subsequent cwd changes must not redirect state writes."""
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    drift_target = tmp_path / "drifted"
+    drift_target.mkdir()
+    monkeypatch.chdir(project_root)
+    omh_config_module._config_cache = {
+        "state_dir": ".omh/state",
+        "project_root": str(project_root),
+        "staleness_hours": 2,
+        "cancel_ttl_seconds": 30,
+        "evidence": {},
+    }
+    state_write(mode="ralph", data={"phase": "first"})
+    monkeypatch.chdir(drift_target)
+    state_write(mode="ralph", data={"phase": "second"})
+    final = json.loads((project_root / ".omh" / "state" / "ralph-state.json").read_text())
+    assert final["phase"] == "second"
+    assert not (drift_target / ".omh" / "state" / "ralph-state.json").exists()
+
+
 def test_seed_does_not_overwrite_user_edits():
     """If user has already customized .omh/README.md, don't clobber it."""
     Path(".omh").mkdir(exist_ok=True)

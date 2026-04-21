@@ -1,4 +1,4 @@
-# project_root: /absolute/path/to/project  # optional; defaults to cwd() at runtime
+# project_root: /absolute/path/to/project  # optional; anchors relative state_dir / evidence paths. Defaults to cwd() at runtime.
 
 roles:
   executor:          {category: implementation}
@@ -16,7 +16,7 @@ roles:
 # Enable via config (debug: true) or environment variable (OMH_DEBUG=1).
 debug: false
 
-state_dir: .omh/state
+state_dir: .omh/state  # relative → anchored to project_root (or cwd if unset); absolute paths used as-is
 staleness_hours: 2
 cancel_ttl_seconds: 30
 
