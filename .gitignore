@@ -1,5 +1,13 @@
 __pycache__/
 *.pyc
-.omh/state/
-.omh/specs/
 .coverage
+
+# OMH ephemeral runtime — see .omh/README.md for the convention
+.omh/state/
+.omh/logs/
+.omh/progress/
+
+# OMH durable artifacts — TRACKED (do not ignore):
+#   .omh/specs/      decision inputs (interview specs)
+#   .omh/plans/      decision records (consensus plans, ADR-style)
+#   .omh/research/   research reports (if/when omh-deep-research lands)
