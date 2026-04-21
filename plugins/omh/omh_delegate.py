@@ -1,34 +1,42 @@
 """
-omh_delegate — hardened wrapper around delegate_task.
+omh_delegate — hardened wrapper around delegate_task (prepare/finalize split).
 
-v0 implements pure subagent-persists with no rescue branch.
+PRIMARY API (v0.2): two functions the agent calls around its own dispatch.
 
-Per .omh/research/ralplan-omh-delegate/round2-planner.md §3 and CONSENSUS.md.
+  prep = omh_delegate_prepare(role=..., mode=..., phase=..., goal=..., context=...)
+  raw  = delegate_task(goal=prep["augmented_goal"], context=prep["context"], ...)
+  res  = omh_delegate_finalize(prep=prep, raw_return=raw)
 
-Behavior:
-  1. Discover project root via .omh/ walk-up from cwd (mirrors git's .git
-     discovery), falling back to cwd. (Round 2 W4)
+Why split: delegate_task is a Hermes TOOL invoked by the agent loop, not a
+Python callable importable from this module. The original v0 single-call API
+assumed otherwise and crashed at import time (Bug D1, surfaced 2026-04-21
+during deep-research dogfood). Splitting puts the dispatch in the agent's
+hands where it belongs; the wrapper retains ownership of: path computation,
+contract injection, breadcrumbs, and verification.
+
+CONVENIENCE API: omh_delegate(...) — Python callable orchestrator. Requires
+explicit delegate_fn= injection. Used by tests and Python-side integrations
+that have a real callable to pass. NOT usable from inside an agent loop.
+
+Behavior (unchanged from v0):
+  1. Discover project root via .omh/ walk-up (mirrors git). (W4)
   2. Compute deterministic expected_output_path under
      .omh/research/{mode}/{phase}[-r{round}][-{slug}]-{ts}.md
-  3. mkdir parents (inline in v0; A1/A2 extraction lands in v1).
+  3. mkdir parents.
   4. Write {id}.dispatched.json breadcrumb (atomic, append-only — no RMW).
   5. Inject brutal-prose <<<EXPECTED_OUTPUT_PATH>>> contract appended to goal.
-  6. Call delegate_task(goal=augmented_goal, **passthrough). Do NOT parse return.
+  6. (agent dispatches; wrapper does NOT parse the return)
   7. Check Path(expected_output_path).is_file().
   8. Write {id}.completed.json breadcrumb (separate file, single-write).
   9. Return {ok, ok_strict, path, id, file_present, contract_satisfied,
             recovered_by_wrapper, raw}.
 
-Out of scope for v0: rescue branch, classifier, batch dispatch, recovery CLI,
-session_id capture, omh_io extraction, tools/delegate_tool.py registration.
+AC-1: ok_strict = (ok is True). Callers needing hard pass/fail should check
+      ok_strict, not ok. v1.B may make ok tri-state ("degraded"); Python
+      truthiness would treat that as truthy. ok_strict is forward-compatible.
 
-AC-1: ok_strict = (ok is True). Callers that need a hard pass/fail should
-      check ok_strict, not ok. v1.B may make ok tri-state ("degraded"),
-      and Python truthiness would treat that as truthy. ok_strict is
-      forward-compatible.
-
-AC-2: cross-fs os.replace failure (FUSE/Docker volumes) is not handled in
-      v0; see plugin README §"Known limitations" for the v2 deferral.
+AC-2: cross-fs os.replace failure (FUSE/Docker volumes) is not handled;
+      see plugin README §"Known limitations" for the v2 deferral.
 """
 
 import hashlib
@@ -170,7 +178,7 @@ def _inject_contract(goal: str, expected_path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def omh_delegate(
+def omh_delegate_prepare(
     *,
     role: str,
     goal: str,
@@ -179,47 +187,39 @@ def omh_delegate(
     context: str = "",
     round: int | None = None,
     slug: str | None = None,
-    delegate_fn: Any = None,
     project_root: Path | None = None,
-    **passthrough,
 ) -> dict:
-    """Hardened wrapper around delegate_task.
+    """Phase 1 of the wrapper: compute paths, write dispatched breadcrumb,
+    inject the contract into the goal text, and return everything the agent
+    needs to perform the dispatch itself.
 
-    Required:
-      role, goal, mode, phase
+    Returns dict:
+      {
+        "id":              dispatch id,
+        "expected_path":   absolute path the subagent must write to,
+        "augmented_goal":  goal text with <<<EXPECTED_OUTPUT_PATH>>> contract appended,
+        "context":         passed-through context (echoed for convenience),
+        "breadcrumb_dir":  absolute path where breadcrumbs live,
+        "project_root":    discovered project root (absolute),
+        "mode":            echoed,
+        "phase":           echoed,
+        "round":           echoed,
+        "slug":            echoed,
+        "role":            echoed,
+      }
 
-    Optional:
-      context     — passed through to delegate_task
-      round       — int, included in path/id when set
-      slug        — short string, included in path
-      project_root — override for path discovery (default: walk up for .omh/)
-      delegate_fn  — injection point for delegate_task (default: import)
-      **passthrough — forwarded to delegate_task (toolsets, max_iterations, etc.)
-
-    Returns:
-      {ok, ok_strict, path, id, file_present, contract_satisfied,
-       recovered_by_wrapper, raw}
-
-    AC-1: callers needing hard pass/fail should check `ok_strict`, not `ok`.
+    Pass the result dict to omh_delegate_finalize(prep=..., raw_return=...)
+    after performing the dispatch with delegate_task.
     """
-    # Resolve delegate_fn lazily so tests can monkeypatch.
-    if delegate_fn is None:
-        from tools.delegate_tool import delegate_task as delegate_fn  # type: ignore
-
-    # 1. Discover project root.
     root = (project_root.resolve() if project_root else _discover_project_root())
-
-    # 2. Compute paths and id.
     ts = _now_compact()
     expected_path = _compute_expected_path(root, mode, phase, round, slug, ts)
     dispatch_id = _compute_id(mode, phase, round, ts)
 
-    # 3. mkdir parents for both research artifact dir and breadcrumb dir.
     expected_path.parent.mkdir(parents=True, exist_ok=True)
     breadcrumb_dir = (root / ".omh" / "state" / "dispatched").resolve()
     breadcrumb_dir.mkdir(parents=True, exist_ok=True)
 
-    # 4. Write dispatched breadcrumb (atomic, append-only).
     goal_bytes = goal.encode("utf-8")
     dispatched = {
         "_meta": {
@@ -242,35 +242,45 @@ def omh_delegate(
     dispatched_path = breadcrumb_dir / f"{dispatch_id}.dispatched.json"
     _atomic_write_text(dispatched_path, json.dumps(dispatched, indent=2))
 
-    # 5. Inject contract.
     augmented_goal = _inject_contract(goal, expected_path)
 
-    # 6. Dispatch (do NOT parse the return).
-    raw_return: Any = None
-    error: str | None = None
-    try:
-        raw_return = delegate_fn(goal=augmented_goal, context=context, **passthrough)
-    except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"
-        # Write completion breadcrumb with error, then re-raise.
-        _write_completion_breadcrumb(
-            breadcrumb_dir=breadcrumb_dir,
-            dispatch_id=dispatch_id,
-            file_present=False,
-            contract_satisfied=False,
-            recovered_by_wrapper=False,
-            bytes_=0,
-            raw_return=None,
-            error=error,
-        )
-        _emit_warning(dispatch_id, expected_path, error="exception", detail=str(exc))
-        raise
+    return {
+        "id": dispatch_id,
+        "expected_path": str(expected_path),
+        "augmented_goal": augmented_goal,
+        "context": context,
+        "breadcrumb_dir": str(breadcrumb_dir),
+        "project_root": str(root),
+        "mode": mode,
+        "phase": phase,
+        "round": round,
+        "slug": slug,
+        "role": role,
+    }
 
-    # 7. Verify file exists.
+
+def omh_delegate_finalize(
+    *,
+    prep: dict,
+    raw_return: Any = None,
+    error: str | None = None,
+) -> dict:
+    """Phase 2: verify file presence, write completion breadcrumb, return
+    the structured result.
+
+    Pass the dict returned by omh_delegate_prepare as `prep`. Pass whatever
+    the dispatch returned as `raw_return` (may be None or any JSON-able
+    value; arbitrary objects are repr'd). If the dispatch raised, pass the
+    exception message as `error` (do not also re-raise here — caller handles
+    that).
+    """
+    expected_path = Path(prep["expected_path"])
+    breadcrumb_dir = Path(prep["breadcrumb_dir"])
+    dispatch_id = prep["id"]
+
     file_present = expected_path.is_file()
     bytes_ = expected_path.stat().st_size if file_present else 0
 
-    # 8. Write completion breadcrumb (single write, append-only).
     _write_completion_breadcrumb(
         breadcrumb_dir=breadcrumb_dir,
         dispatch_id=dispatch_id,
@@ -279,15 +289,17 @@ def omh_delegate(
         recovered_by_wrapper=False,        # always False in v0.
         bytes_=bytes_,
         raw_return=raw_return,
-        error=None,
+        error=error,
     )
 
-    # 9. W5: stderr warning on any non-clean dispatch.
-    if not file_present:
+    if error is not None:
+        _emit_warning(dispatch_id, expected_path, error="exception",
+                      detail=error)
+    elif not file_present:
         _emit_warning(dispatch_id, expected_path, error="contract_violation",
                       detail="file not present at expected path after dispatch")
 
-    ok = file_present
+    ok = file_present and (error is None)
     return {
         "ok": ok,
         "ok_strict": (ok is True),  # AC-1
@@ -298,6 +310,64 @@ def omh_delegate(
         "recovered_by_wrapper": False,
         "raw": raw_return,
     }
+
+
+def omh_delegate(
+    *,
+    role: str,
+    goal: str,
+    mode: str,
+    phase: str,
+    delegate_fn: Any,
+    context: str = "",
+    round: int | None = None,
+    slug: str | None = None,
+    project_root: Path | None = None,
+    **passthrough,
+) -> dict:
+    """Convenience orchestrator for Python callers with a real delegate_fn.
+
+    Equivalent to:
+        prep = omh_delegate_prepare(...)
+        try:
+            raw = delegate_fn(goal=prep["augmented_goal"],
+                              context=prep["context"], **passthrough)
+        except Exception as exc:
+            omh_delegate_finalize(prep=prep, error=f"{type(exc).__name__}: {exc}")
+            raise
+        return omh_delegate_finalize(prep=prep, raw_return=raw)
+
+    NOT usable from inside an agent loop because Hermes' delegate_task is a
+    tool, not an importable Python callable. Agent loops should call
+    omh_delegate_prepare → delegate_task (via the agent's tool dispatch) →
+    omh_delegate_finalize directly.
+
+    AC-1: callers needing hard pass/fail should check `ok_strict`, not `ok`.
+    """
+    if delegate_fn is None:
+        raise TypeError(
+            "omh_delegate(...) requires an explicit delegate_fn= callable. "
+            "From inside an agent loop, use omh_delegate_prepare/finalize "
+            "around the agent's own delegate_task tool dispatch."
+        )
+
+    prep = omh_delegate_prepare(
+        role=role, goal=goal, mode=mode, phase=phase, context=context,
+        round=round, slug=slug, project_root=project_root,
+    )
+
+    try:
+        raw_return = delegate_fn(
+            goal=prep["augmented_goal"],
+            context=prep["context"],
+            **passthrough,
+        )
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        omh_delegate_finalize(prep=prep, raw_return=None, error=error)
+        raise
+
+    return omh_delegate_finalize(prep=prep, raw_return=raw_return)
 
 
 # ---------------------------------------------------------------------------

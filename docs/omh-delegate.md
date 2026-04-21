@@ -1,4 +1,4 @@
-# omh_delegate — hardened delegation wrapper (v0)
+# omh_delegate — hardened delegation wrapper (v0.2 — prepare/finalize split)
 
 `omh_delegate` is a thin wrapper around Hermes's `delegate_task` that
 hardens the parent-subagent boundary against output loss.
@@ -27,7 +27,48 @@ The full design history lives at
 `.omh/research/ralplan-omh-delegate/` — spec, two rounds of
 Planner / Architect / Critic debate, and the final consensus document.
 
-## Public API
+## Public API — prepare / finalize (PRIMARY, for agent loops)
+
+`delegate_task` is a Hermes **tool** invoked by the agent loop, not an
+importable Python callable. The wrapper therefore splits into two
+functions the agent calls *around* its own dispatch:
+
+```python
+from plugins.omh.omh_delegate import omh_delegate_prepare, omh_delegate_finalize
+
+# Step 1 — prepare: compute paths, write dispatched breadcrumb, inject contract
+prep = omh_delegate_prepare(
+    role="planner",
+    goal="<self-contained goal text>",
+    mode="ralplan",
+    phase="round1-planner",
+    round=1,
+    context="<optional context>",
+)
+
+# Step 2 — agent calls delegate_task as a tool (NOT shown in Python; this is
+# the agent's own tool dispatch loop). Pass prep["augmented_goal"] and
+# prep["context"]. The subagent will write to prep["expected_path"].
+raw_return = ...  # whatever delegate_task returned (typically the path string)
+
+# Step 3 — finalize: verify file present, write completion breadcrumb
+result = omh_delegate_finalize(prep=prep, raw_return=raw_return)
+# Or, if the dispatch raised:
+# result = omh_delegate_finalize(prep=prep, error=f"{type(e).__name__}: {e}")
+```
+
+The split exists because the original `omh_delegate(...)` API assumed
+`delegate_task` was importable as a Python callable. It isn't —
+discovered during dogfood (Bug D1). The prepare/finalize API puts the
+dispatch in the agent's hands where it belongs and keeps the wrapper in
+charge of contract injection, breadcrumbs, and verification.
+
+## Convenience API — single call (Python callers only)
+
+For Python tests and integrations that have a real callable, the
+all-in-one form still exists. It now requires explicit `delegate_fn=`
+(passing `None` raises `TypeError` rather than falling through to a
+broken default import — a regression guard for the Bug D1 failure mode).
 
 ```python
 from plugins.omh.omh_delegate import omh_delegate
@@ -35,27 +76,47 @@ from plugins.omh.omh_delegate import omh_delegate
 result = omh_delegate(
     role="planner",
     goal="<self-contained goal text>",
-    mode="ralplan",                  # routes artifact path
-    phase="round1-planner",          # routes artifact path
-    round=1,                         # optional, included in path/id
-    slug=None,                       # optional, included in path
-    context="",                      # passed through
-    toolsets=["file", "terminal"],   # passthrough to delegate_task
+    mode="ralplan",
+    phase="round1-planner",
+    delegate_fn=my_real_python_callable,  # required, no default
+    round=1,
+    context="",
+    toolsets=["file"],   # passthrough to delegate_fn
 )
 ```
 
-Returns:
+## Result schema
+
+`omh_delegate_finalize(...)` and `omh_delegate(...)` both return:
 
 ```python
 {
-    "ok":                    bool,    # True iff file present at expected path
+    "ok":                    bool,    # True iff file present and no error
     "ok_strict":             bool,    # AC-1 — see "Forward compatibility" below
     "path":                  str,     # absolute expected_output_path
     "id":                    str,     # dispatch id, used in breadcrumb filenames
     "file_present":          bool,    # source of truth
     "contract_satisfied":    bool,    # v0: == file_present
     "recovered_by_wrapper":  bool,    # always False in v0
-    "raw":                   Any,     # delegate_task's raw return, unparsed
+    "raw":                   Any,     # raw return passed to finalize, unparsed
+}
+```
+
+`omh_delegate_prepare(...)` returns:
+
+```python
+{
+    "id":              str,    # pass to finalize via prep[]
+    "expected_path":   str,    # absolute path the subagent must write to
+    "augmented_goal":  str,    # goal + injected <<<EXPECTED_OUTPUT_PATH>>> contract
+    "context":         str,    # echoed for convenience
+    "breadcrumb_dir":  str,    # absolute, used by finalize
+    "project_root":    str,
+    "mode":            str,
+    "phase":           str,
+    "round":           int | None,
+    "slug":            str | None,
+    "role":            str,
 }
 ```
 
@@ -70,8 +131,8 @@ Artifacts land at:
 Breadcrumbs land at:
 
 ```
-.omh/state/dispatched/{id}.dispatched.json   ← written before dispatch
-.omh/state/dispatched/{id}.completed.json    ← written after dispatch (separate file)
+.omh/state/dispatched/{id}.dispatched.json   ← written by prepare()
+.omh/state/dispatched/{id}.completed.json    ← written by finalize() (separate file)
 ```
 
 Both breadcrumbs are **append-only**. The wrapper never mutates a
@@ -110,7 +171,9 @@ These are intentional v0 simplifications, deferred to later phases.
 They are documented here so the deferrals are explicit and discoverable
 rather than silently inherited.
 
-- **No batch dispatch.** v0 is single-task only. v1 adds `tasks=[...]`.
+- **No batch dispatch helper.** v0 is single-task only at the wrapper
+  level. The agent can call `delegate_task(tasks=[...])` between prepare
+  and finalize; v1 will add a batch-aware wrapper.
 - **No rescue branch.** Contract violations surface as `ok=False` with
   the raw return preserved on the completion breadcrumb. v1 may add a
   loud, sentinel-marker-gated rescue if the C0 measurement shows it is
@@ -142,24 +205,33 @@ rather than silently inherited.
 
 `plugins/omh/tests/test_omh_delegate.py` covers:
 
-1. Happy path — subagent obeys contract.
+1. Happy path — subagent obeys contract (orchestrator form).
 2. Contract violation — no rescue, raw preserved on breadcrumb.
-3. `delegate_task` raises — breadcrumb captures error, exception
-   re-raised.
+3. `delegate_task` raises — breadcrumb captures error, exception re-raised.
 4. Project-root walk-up from a nested subdirectory.
 5. Project-root falls back to cwd when no `.omh/` marker exists.
 6. Three-boolean status always present.
 7. Append-only breadcrumbs (separate files, no RMW).
+8. `prepare()` returns augmented goal + writes dispatched breadcrumb only.
+9. `finalize()` happy path with file present.
+10. `finalize()` contract violation — no file at expected path.
+11. `finalize()` with explicit error — recorded on breadcrumb, no re-raise.
+12. `omh_delegate(delegate_fn=None)` raises `TypeError` (Bug D1 regression guard).
+13. Orchestrator end-to-end: same end-state as explicit prepare/finalize.
 
 ## Roadmap
 
-- **v0** (this) — minimal wrapper, no rescue, single-task, dogfood on
-  one ralplan phase.
-- **v1.A** (always) — extract `omh_io` helpers, add batch dispatch,
-  Hermes tool registration, migrate remaining ralplan phases and the
-  other OMH skills.
+- **v0** (initial) — minimal wrapper, no rescue, single-task, dogfood on
+  one ralplan phase. Single all-in-one API with a broken default import.
+- **v0.2** (this) — prepare/finalize split as primary API; orchestrator
+  becomes a Python-only convenience that requires explicit `delegate_fn`.
+  Bug D1 fix.
+- **v1.A** (always) — extract `omh_io` helpers, add batch dispatch
+  helper, Hermes tool registration, migrate remaining ralplan phases and
+  the other OMH skills.
 - **v1.B** (conditional on C0 measurement) — sentinel-marker-gated
   loud rescue branch with three-boolean status surfaced as
   `ok="degraded"`.
 - **v2** — recovery CLI, GC, session_id capture, lock sentinel for
   multi-orchestrator, cross-fs detection.
+
