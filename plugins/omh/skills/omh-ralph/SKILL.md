@@ -5,7 +5,7 @@ version: 2.0.0
 metadata:
   hermes:
     requires_toolsets: [terminal, omh]
-    tags: [oh-my-hermes, productivity]
+    tags: [execution, verification, persistence, iron-law, loop]
     category: omh
 ---
 
