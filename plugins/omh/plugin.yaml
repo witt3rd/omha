@@ -1,7 +1,6 @@
 name: omh
 version: "0.1.0"
 description: "Oh My Hermes — infrastructure layer for OMH skills (state management, evidence gathering, mode awareness)"
-entry_point: plugin
 requires_python: ">=3.10"
 
 tools:
@@ -15,3 +14,11 @@ hooks:
 
 dependencies:
   - pyyaml  # required for config.yaml loading
+
+skills:
+  bundled:
+    - omh-ralplan
+    - omh-ralph
+    - omh-deep-interview
+    - omh-deep-research
+    - omh-autopilot

@@ -4,56 +4,102 @@ OMH Plugin — infrastructure layer for Oh My Hermes skills.
 Registers:
   Tools: omh_state, omh_gather_evidence
   Hooks: pre_llm_call, on_session_end, pre_tool_call
-  Skills: omh-ralplan, omh-ralph, omh-deep-interview, omh-autopilot (bundled)
+  Skills: omh-ralplan, omh-ralph, omh-deep-interview, omh-autopilot, omh-deep-research
+          Installed as symlinks in ~/.hermes/skills/ pointing back into the plugin's
+          own skills/ directory. Updates are picked up automatically on next session.
 """
 
 import logging
-import shutil
+import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _TOOLSET = "omh"
 
+# Prefix that marks skills owned by this plugin.
+# We will only touch symlinks (never real dirs) whose name starts with this.
+_SKILL_PREFIX = "omh-"
 
-def _install_skills():
-    """Install bundled skills to ~/.hermes/skills/ if not already present.
 
-    Skips skills that are already installed — the user's copy takes precedence.
-    Uses an atomic copy-then-rename pattern to avoid partial installs.
-    """
+def _is_our_symlink(dest: Path, src: Path) -> bool:
+    """Return True if dest is a symlink that points into our plugin's skills/ tree."""
+    if not dest.is_symlink():
+        return False
     try:
-        from hermes_cli.config import get_hermes_home
-        skills_dest_root = get_hermes_home() / "skills"
+        target = Path(os.readlink(dest))
+        if not target.is_absolute():
+            target = (dest.parent / target).resolve()
+        return target == src.resolve() or src.resolve() in target.parents
     except Exception:
-        skills_dest_root = Path.home() / ".hermes" / "skills"
+        return False
 
-    skills_src_root = Path(__file__).parent / "skills"
+
+def _is_broken_our_symlink(dest: Path) -> bool:
+    """Return True if dest is a broken symlink with our prefix (stale, was ours)."""
+    return dest.is_symlink() and not dest.exists() and dest.name.startswith(_SKILL_PREFIX)
+
+
+def _link_skills(
+    skills_src_root: "Path | None" = None,
+    skills_dest_root: "Path | None" = None,
+) -> None:
+    """Create or refresh symlinks in ~/.hermes/skills/ for each bundled skill.
+
+    Ownership rules:
+    - dest does not exist          -> create symlink
+    - dest is a symlink to us      -> refresh (replace) in case plugin path changed
+    - dest is a broken symlink
+      with our prefix              -> we owned it, recreate
+    - dest is a real directory     -> user owns it, skip (never overwrite)
+    - dest is a symlink elsewhere  -> user owns it, skip
+
+    The optional *skills_src_root* and *skills_dest_root* arguments override the
+    default paths and are used by tests to avoid touching the real filesystem.
+    """
+    if skills_dest_root is None:
+        try:
+            from hermes_cli.config import get_hermes_home
+            skills_dest_root = get_hermes_home() / "skills"
+        except Exception:
+            skills_dest_root = Path.home() / ".hermes" / "skills"
+
+    if skills_src_root is None:
+        skills_src_root = Path(__file__).parent / "skills"
+
     if not skills_src_root.exists():
         return
 
     skills_dest_root.mkdir(parents=True, exist_ok=True)
 
-    for skill_dir in skills_src_root.iterdir():
-        if not skill_dir.is_dir():
+    for skill_src in skills_src_root.iterdir():
+        if not skill_src.is_dir():
             continue
-        dest = skills_dest_root / skill_dir.name
-        if dest.exists():
-            continue  # already installed; never overwrite user's copy
-        tmp_dest = dest.parent / (dest.name + "._installing")
+        dest = skills_dest_root / skill_src.name
+
+        if dest.is_symlink():
+            if _is_our_symlink(dest, skill_src) or _is_broken_our_symlink(dest):
+                # Ours — refresh the symlink (handles plugin path changes)
+                dest.unlink()
+            else:
+                # Points somewhere else — not ours, leave it
+                logger.debug("omh: skipping %s — symlink to unknown target", dest.name)
+                continue
+        elif dest.exists():
+            # Real directory — user owns it, never touch
+            logger.debug("omh: skipping %s — real directory exists", dest.name)
+            continue
+
         try:
-            if tmp_dest.exists():
-                shutil.rmtree(tmp_dest)
-            shutil.copytree(skill_dir, tmp_dest)
-            tmp_dest.rename(dest)  # atomic on same filesystem
+            dest.symlink_to(skill_src.resolve())
+            logger.debug("omh: linked skill %s -> %s", dest.name, skill_src.resolve())
         except Exception as e:
-            logger.warning("Failed to install skill '%s': %s", skill_dir.name, e)
-            shutil.rmtree(tmp_dest, ignore_errors=True)
+            logger.warning("omh: failed to link skill '%s': %s", skill_src.name, e)
 
 
 def register(ctx):
     """Entry point called by Hermes plugin discovery."""
-    _install_skills()
+    _link_skills()
 
     from .tools.state_tool import OMH_STATE_SCHEMA, omh_state_handler
     from .tools.evidence_tool import OMH_EVIDENCE_SCHEMA, omh_evidence_handler
