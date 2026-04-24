@@ -1,6 +1,6 @@
 ---
 name: omh-deep-research
-description: Parallel web research with synthesis and citation checks
+description: parallel web research; subagents→synthesis→cite-verify
 version: 1.0.0
 metadata:
   hermes:

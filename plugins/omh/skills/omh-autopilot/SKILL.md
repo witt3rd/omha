@@ -1,6 +1,6 @@
 ---
 name: omh-autopilot
-description: "Idea-to-code pipeline: interview→plan→execute→verify"
+description: "pipeline: interview→plan→execute→QA→verify (idea→code)"
 version: 2.0.0
 metadata:
   hermes:

@@ -1,6 +1,6 @@
 ---
 name: omh-ralph
-description: "Verified execution: one task/invocation, iron-law checks"
+description: "execute plan: 1 task/call, verify evidence, iron law"
 version: 2.0.0
 metadata:
   hermes:

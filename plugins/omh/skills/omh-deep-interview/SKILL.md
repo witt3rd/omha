@@ -1,6 +1,6 @@
 ---
 name: omh-deep-interview
-description: Socratic requirements interview for vague/ambiguous goals
+description: Socratic reqs interview; clarify vague/ambiguous goals
 version: 2.0.0
 metadata:
   hermes:

@@ -1,6 +1,6 @@
 ---
 name: omh-ralplan
-description: Consensus plan via Planner+Architect+Critic debate
+description: "Planner+Architect+Critic→consensus impl plan (≤3 rounds)"
 version: 2.0.0
 metadata:
   hermes:
