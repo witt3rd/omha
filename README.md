@@ -13,6 +13,7 @@ Skills work standalone with zero dependencies.
 |-------|--------------|
 | **omh-deep-research** | Multi-phase web research: decompose → parallel search → synthesize → verify citations |
 | **omh-ralplan** | Consensus planning: Planner → Architect → Critic debate until agreement |
+| **omh-ralplan-orchestration** | Dispatcher's playbook for driving an `omh-ralplan` run — context-package authoring (where quality is born), round dispatch, distillation, final review |
 | **omh-deep-interview** | Socratic requirements interview with coverage tracking |
 | **omh-ralph** | Verified execution: implement → verify → iterate until done |
 | **omh-autopilot** | Full pipeline composing all three skills end-to-end |
@@ -30,7 +31,7 @@ domain is unfamiliar; otherwise start at the interview.)
 
 ```bash
 hermes skills tap add witt3rd/oh-my-hermes
-hermes skills install omh-deep-research omh-ralplan omh-deep-interview omh-ralph omh-autopilot
+hermes skills install omh-deep-research omh-ralplan omh-ralplan-orchestration omh-deep-interview omh-ralph omh-autopilot
 ```
 
 Or copy `skills/<name>/` to `~/.hermes/skills/omh/` manually.
@@ -44,6 +45,7 @@ For local development (live edits via symlinks), see [CONTRIBUTING.md](CONTRIBUT
 
 - **Need background on an unfamiliar domain?** → `omh-deep-research`
 - **Just need a plan?** → `omh-ralplan`
+- **Driving a ralplan run yourself?** → `omh-ralplan-orchestration` (load alongside `omh-ralplan`)
 - **Vague idea?** → `omh-deep-interview` then `omh-ralplan`
 - **Have a plan, need execution?** → `omh-ralph`
 - **End-to-end?** → `omh-autopilot`
