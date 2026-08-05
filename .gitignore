@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .coverage
+*.egg-info
 
 # OMH ephemeral runtime — see .omh/README.md for the convention
 .omh/state/
