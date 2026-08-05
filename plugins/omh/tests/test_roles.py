@@ -57,6 +57,7 @@ def test_get_role_catalog_returns_all_roles():
         "analyst", "architect", "code-reviewer", "critic", "debugger",
         "executor", "planner", "security-reviewer", "test-engineer", "verifier",
         "researcher", "research-synthesist", "research-verifier",
+        "triage-maintainer", "triage-skeptic",
     }
     assert expected == set(catalog.keys())
 
